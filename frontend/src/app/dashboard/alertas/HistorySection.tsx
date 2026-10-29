@@ -2,6 +2,7 @@
 
 import { useState, useEffect, type Dispatch, type SetStateAction } from 'react'
 import Image from 'next/image'
+import Select from '@/components/Select'
 import RuleTypeBadge from './RuleTypeBadge'
 import { competitorName, filterPublicationAlerts, removeAlerts, updateAlertReadAt, type PublicationAlert } from '@/lib/price-alerts'
 
@@ -236,48 +237,40 @@ export default function HistorySection({
 
           <div className="h-5 w-px bg-gray-200 mx-1 shrink-0" />
 
-          <select
+          <Select
             aria-label="Estado de la publicación"
+            variant="filter"
             value={filterStatus}
-            onChange={e => setFilterStatus(e.target.value as 'all' | 'active')}
-            className="bg-transparent border-0 text-xs text-gray-700 font-medium focus:outline-none focus:ring-0 pr-7 py-1 cursor-pointer"
-          >
-            <option value="all">Todos los estados</option>
-            <option value="active">Activos</option>
-          </select>
+            onValueChange={value => setFilterStatus(value as 'all' | 'active')}
+            options={[{ value: 'all', label: 'Todos los estados' }, { value: 'active', label: 'Activos' }]}
+          />
 
           {rules.length > 0 && (
-            <select
+            <Select
               aria-label="Regla de alerta"
+              variant="filter"
               value={filterRule}
-              onChange={e => setFilterRule(e.target.value)}
-              className="bg-transparent border-0 text-xs text-gray-700 font-medium focus:outline-none focus:ring-0 pr-7 py-1 cursor-pointer hover:text-gray-900"
-            >
-              <option value="">Todas las reglas</option>
-              {rules.map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
-            </select>
+              onValueChange={value => setFilterRule(value)}
+              options={[{ value: '', label: 'Todas las reglas' }, ...rules.map(r => ({ value: r.id, label: r.name }))]}
+            />
           )}
 
-          <select
+          <Select
             aria-label="SKU"
+            variant="filter"
             value={filterSku}
-            onChange={e => setFilterSku(e.target.value)}
-            className="bg-transparent border-0 text-xs text-gray-700 font-medium focus:outline-none focus:ring-0 pr-7 py-1 cursor-pointer hover:text-gray-900"
-          >
-            <option value="">Todos los SKU</option>
-            {skus.map(s => <option key={s.sku} value={s.sku}>{s.sku}</option>)}
-          </select>
+            onValueChange={value => setFilterSku(value)}
+            options={[{ value: '', label: 'Todos los SKU' }, ...skus.map(s => ({ value: s.sku, label: s.sku }))]}
+          />
 
           {competitorOptions.length > 0 && (
-            <select
+            <Select
               aria-label="Competidor"
+              variant="filter"
               value={filterCompetitor}
-              onChange={e => setFilterCompetitor(e.target.value)}
-              className="bg-transparent border-0 text-xs text-gray-700 font-medium focus:outline-none focus:ring-0 pr-7 py-1 cursor-pointer hover:text-gray-900"
-            >
-              <option value="">Todos los competidores</option>
-              {competitorOptions.map(name => <option key={name} value={name}>{name}</option>)}
-            </select>
+              onValueChange={value => setFilterCompetitor(value)}
+              options={[{ value: '', label: 'Todos los competidores' }, ...competitorOptions.map(name => ({ value: name, label: name }))]}
+            />
           )}
 
           <div className="flex-1" />

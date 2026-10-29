@@ -2,6 +2,7 @@
 
 import { Fragment, startTransition, useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react'
 import Image from 'next/image'
+import Select from '@/components/Select'
 import { skuKey } from '@/lib/sku'
 
 function Accordion({ title, defaultOpen = false, children }: { title: string; defaultOpen?: boolean; children: React.ReactNode }) {
@@ -316,15 +317,13 @@ function AddCompetitorModal({
                 Se vincula a la publicación actual: <span className="font-mono font-medium text-gray-700">{initialProductId}</span>
               </p>
             ) : (
-              <select
+              <Select
+                aria-label="Vincular a nuestro producto por SKU"
+                variant="form"
                 value={selectedSku}
-                onChange={e => setSelectedSku(e.target.value)}
-                className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
-              >
-                {availableSkus.map(s => (
-                  <option key={s} value={s}>{s}</option>
-                ))}
-              </select>
+                onValueChange={value => setSelectedSku(value)}
+                options={availableSkus.map(s => ({ value: s, label: s }))}
+              />
             )}
           </div>
 
@@ -1096,28 +1095,24 @@ export default function ProductsTable({
         </div>
 
         {/* Category filter */}
-        <select
+        <Select
+          aria-label="Categoría"
+          variant="form"
           value={selectedCategory ?? ''}
-          onChange={e => { setSelectedCategory(e.target.value || null); resetPage() }}
-          className="w-[11rem] py-1.5 px-3 border border-gray-200 rounded-lg text-sm text-gray-700 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-        >
-          <option value="">Todas las categorías</option>
-          {categoriesWithNames.map(({ id, name }) => (
-            <option key={id} value={id}>{name}</option>
-          ))}
-        </select>
+          onValueChange={value => { setSelectedCategory(value || null); resetPage() }}
+          options={[{ value: '', label: 'Todas las categorías' }, ...categoriesWithNames.map(({ id, name }) => ({ value: id, label: name }))]}
+          className="!w-[11rem] !py-1.5"
+        />
 
         {competitorNameOptions.length > 0 && (
-          <select
+          <Select
+            aria-label="Competidor"
+            variant="form"
             value={competitorNameFilter}
-            onChange={e => { setCompetitorNameFilter(e.target.value); resetPage() }}
-            className="py-1.5 px-3 border border-gray-200 rounded-lg text-sm text-gray-700 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-          >
-            <option value="">Todos los competidores</option>
-            {competitorNameOptions.map(name => (
-            <option key={name} value={name}>{name}</option>
-          ))}
-        </select>
+            onValueChange={value => { setCompetitorNameFilter(value); resetPage() }}
+            options={[{ value: '', label: 'Todos los competidores' }, ...competitorNameOptions.map(name => ({ value: name, label: name }))]}
+            className="!w-auto !py-1.5"
+          />
         )}
       </div>
 

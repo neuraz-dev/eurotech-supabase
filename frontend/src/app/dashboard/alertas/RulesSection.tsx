@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
+import Select from '@/components/Select'
 import RuleTypeBadge from './RuleTypeBadge'
 
 const RULE_LABELS: Record<string, string> = {
@@ -69,28 +70,23 @@ function RuleForm({
         </div>
         <div>
           <label className="block text-xs text-gray-500 mb-1">Tipo de regla</label>
-          <select
+          <Select
+            aria-label="Tipo de regla"
+            variant="form"
             value={ruleType}
-            onChange={e => setRuleType(e.target.value)}
-            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-400"
-          >
-            {Object.entries(RULE_LABELS).map(([v, l]) => (
-              <option key={v} value={v}>{l}</option>
-            ))}
-          </select>
+            onValueChange={value => setRuleType(value)}
+            options={Object.entries(RULE_LABELS).map(([value, label]) => ({ value, label }))}
+          />
         </div>
         <div>
           <label className="block text-xs text-gray-500 mb-1">SKU (opcional — vacío = global)</label>
-          <select
+          <Select
+            aria-label="SKU de la regla"
+            variant="form"
             value={selectedSku}
-            onChange={e => setSelectedSku(e.target.value)}
-            className="w-full border border-gray-200 rounded-lg px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-400"
-          >
-            <option value="">Todos los productos</option>
-            {skus.map(s => (
-              <option key={s.sku} value={s.sku}>{s.sku} — {s.title}</option>
-            ))}
-          </select>
+            onValueChange={value => setSelectedSku(value)}
+            options={[{ value: '', label: 'Todos los productos' }, ...skus.map(s => ({ value: s.sku, label: `${s.sku} — ${s.title}` }))]}
+          />
         </div>
         {needsThreshold && (
           <div>
