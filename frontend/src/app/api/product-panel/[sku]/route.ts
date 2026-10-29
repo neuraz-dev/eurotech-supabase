@@ -1,66 +1,50 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { fetchAllRows } from '@/lib/fetch-all-rows'
+import { indexProducts, resolveCompetitorProducts } from '@/lib/product-ownership'
+import { skuKey } from '@/lib/sku'
+
+const PRODUCT_SELECT = 'id, title, sku, price, sale_price, catalog_price, buybox_price, status, thumbnail, permalink, currency_id, available_quantity, pictures, synced_at'
+const COMPETITOR_SELECT = 'id, our_sku, our_product_id, title, price, currency_id, usd_price, thumbnail, permalink, seller_name, status, paused'
 
 export async function GET(
   _req: NextRequest,
-  { params }: { params: Promise<{ sku: string }> }
+  { params }: { params: Promise<{ sku: string }> },
 ) {
   const { sku: ownerLookup } = await params
   const admin = createAdminClient()
 
-  const [byIdActiveRes, byIdAnyRes, byIdCompetitorsRes] = await Promise.all([
-    admin
-      .schema('ml').from('ml_products')
-      .select('id, title, sku, price, sale_price, catalog_price, buybox_price, status, thumbnail, permalink, currency_id, available_quantity, pictures')
-      .eq('id', ownerLookup)
-      .eq('status', 'active')
-      .maybeSingle(),
-    admin
-      .schema('ml').from('ml_products')
-      .select('id, title, sku, price, sale_price, catalog_price, buybox_price, status, thumbnail, permalink, currency_id, available_quantity, pictures')
-      .eq('id', ownerLookup)
-      .maybeSingle(),
-    admin
-      .schema('ml').from('ml_competitor_items')
-      .select('id, title, price, currency_id, usd_price, thumbnail, permalink, seller_name, status, paused')
-      .eq('our_product_id', ownerLookup),
-  ])
+  try {
+    const byId = await admin.schema('ml').from('ml_products')
+      .select(PRODUCT_SELECT).eq('id', ownerLookup).maybeSingle()
+    if (byId.error) throw new Error(byId.error.message)
+    let product = byId.data
 
-  const productById = byIdActiveRes.data ?? byIdAnyRes.data
-  if (productById) {
+    if (!product) {
+      // Normalize locally: ilike treats %/_ as wildcards and does not trim stored SKUs.
+      const products = await fetchAllRows('los productos', (from, to) => admin
+        .schema('ml').from('ml_products').select(PRODUCT_SELECT).order('id').range(from, to))
+      const key = skuKey(ownerLookup)
+      const matches = key ? products.filter(p => skuKey(p.sku) === key) : []
+      matches.sort((a, b) => Number(b.status === 'active') - Number(a.status === 'active')
+        || (b.synced_at ?? '').localeCompare(a.synced_at ?? '') || a.id.localeCompare(b.id))
+      product = matches[0] ?? null
+    }
+
+    if (!product) return NextResponse.json({ product: null, competitors: [] })
+
+    const productId = product.id as string
+    const competitors = await fetchAllRows('los rivales', (from, to) => admin
+      .schema('ml').from('ml_competitor_items').select(COMPETITOR_SELECT)
+      .or(`our_product_id.is.null,our_product_id.eq.${productId}`)
+      .order('id').range(from, to))
+    const index = indexProducts([{ id: productId, sku: product.sku as string | null }])
     return NextResponse.json({
-      product: productById,
-      competitors: byIdCompetitorsRes.data ?? [],
+      product,
+      competitors: competitors.filter(c => resolveCompetitorProducts(c, index).length > 0),
     })
+  } catch (error) {
+    console.error('[product-panel]', error)
+    return NextResponse.json({ error: error instanceof Error ? error.message : 'No se pudo cargar la publicación.' }, { status: 500 })
   }
-
-  const [activeRes, anyRes, competitorsRes] = await Promise.all([
-    admin
-      .schema('ml').from('ml_products')
-      .select('id, title, sku, price, sale_price, catalog_price, buybox_price, status, thumbnail, permalink, currency_id, available_quantity, pictures')
-      .ilike('sku', ownerLookup)
-      .eq('status', 'active')
-      .order('synced_at', { ascending: false })
-      .limit(1)
-      .maybeSingle(),
-    admin
-      .schema('ml').from('ml_products')
-      .select('id, title, sku, price, sale_price, catalog_price, buybox_price, status, thumbnail, permalink, currency_id, available_quantity, pictures')
-      .ilike('sku', ownerLookup)
-      .order('synced_at', { ascending: false })
-      .limit(1)
-      .maybeSingle(),
-    admin
-      .schema('ml').from('ml_competitor_items')
-      .select('id, title, price, currency_id, usd_price, thumbnail, permalink, seller_name, status, paused')
-      .eq('our_sku', ownerLookup),
-  ])
-
-  // Preferir el producto activo; si no hay, caer al más reciente (pausado/etc)
-  const productRes = activeRes.data ? activeRes : anyRes
-
-  return NextResponse.json({
-    product: productRes.data ?? null,
-    competitors: competitorsRes.data ?? [],
-  })
 }

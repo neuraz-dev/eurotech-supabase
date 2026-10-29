@@ -1,14 +1,22 @@
 'use client'
 
 import { useMemo, useState } from 'react'
+import type { AlertRule, PublicationAlert } from '@/lib/price-alerts'
 import RulesSection from './RulesSection'
 import HistorySection from './HistorySection'
 import SyncButton from '../productos/SyncButton'
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Props = { rules: any[]; alerts: any[]; skus: { sku: string; title: string }[]; unreadCount: number }
+type Props = { rules: AlertRule[]; initialAlerts: PublicationAlert[]; skus: { sku: string; title: string }[] }
 
-export default function AlertasLayout({ rules, alerts, skus, unreadCount }: Props) {
+export default function AlertasLayout({ rules, initialAlerts, skus }: Props) {
+  const [alerts, setAlerts] = useState(initialAlerts)
+  // Adopt refreshed server data without preserving stale read/deleted rows.
+  const [previousAlerts, setPreviousAlerts] = useState(initialAlerts)
+  if (previousAlerts !== initialAlerts) {
+    setPreviousAlerts(initialAlerts)
+    setAlerts(initialAlerts)
+  }
+  const unreadCount = alerts.filter(alert => !alert.read_at).length
   const [showRules, setShowRules] = useState(false)
 
   const stats = useMemo(() => {
@@ -70,7 +78,8 @@ export default function AlertasLayout({ rules, alerts, skus, unreadCount }: Prop
 
       {/* History */}
       <HistorySection
-        initialAlerts={alerts}
+        alerts={alerts}
+        setAlerts={setAlerts}
         skus={skus}
         rules={rules.map((r: { id: string; name: string }) => ({ id: r.id, name: r.name }))}
       />

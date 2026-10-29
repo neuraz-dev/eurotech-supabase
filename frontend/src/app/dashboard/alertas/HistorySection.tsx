@@ -1,25 +1,9 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, type Dispatch, type SetStateAction } from 'react'
 import Image from 'next/image'
 import RuleTypeBadge from './RuleTypeBadge'
-
-type AlertItem = {
-  id: string
-  our_sku: string
-  owner_product_id?: string | null
-  owner_title?: string | null
-  owner_lookup?: string | null
-  competitor_item_id: string
-  our_price: number | null
-  competitor_price_before: number | null
-  competitor_price_after: number | null
-  diff_pct: number | null
-  fired_at: string
-  read_at: string | null
-  ml_price_alert_rules: { id: string; name: string; rule_type: string } | null
-  ml_competitor_items: { title: string | null; seller_name: string | null; thumbnail: string | null } | null
-}
+import { competitorName, filterPublicationAlerts, removeAlerts, updateAlertReadAt, type PublicationAlert } from '@/lib/price-alerts'
 
 type Rule = { id: string; name: string }
 type Sku = { sku: string; title: string }
@@ -86,20 +70,24 @@ const STATUS_COLOR: Record<string, string> = {
   closed: 'bg-gray-100 text-gray-600',
 }
 const STATUS_LABEL: Record<string, string> = {
-  active: 'Activo', paused: 'Pausado', closed: 'Cerrado',
+  active: 'Activo', paused: 'Pausado', closed: 'Cerrado', under_review: 'En revisión', inactive: 'Inactivo',
 }
 
 export default function HistorySection({
-  initialAlerts,
+  alerts,
+  setAlerts,
   skus,
   rules,
 }: {
-  initialAlerts: AlertItem[]
+  alerts: PublicationAlert[]
+  setAlerts: Dispatch<SetStateAction<PublicationAlert[]>>
   skus: Sku[]
   rules: Rule[]
 }) {
-  const [alerts, setAlerts] = useState<AlertItem[]>(initialAlerts)
-  const [filter, setFilter] = useState<'all' | 'unread'>('unread')
+  const [filter, setFilter] = useState<'all' | 'unread'>('all')
+  const [filterStatus, setFilterStatus] = useState<'all' | 'active'>('all')
+  const [actionError, setActionError] = useState<string | null>(null)
+  const [panelError, setPanelError] = useState<string | null>(null)
   const [filterSku, setFilterSku] = useState('')
   const [filterRule, setFilterRule] = useState('')
   const [filterCompetitor, setFilterCompetitor] = useState('')
@@ -108,68 +96,91 @@ export default function HistorySection({
   const [panelData, setPanelData] = useState<PanelData | null>(null)
   const [panelLoading, setPanelLoading] = useState(false)
 
-  const skuMap = new Map(skus.map(s => [s.sku, s.title]))
   const competitorOptions = Array.from(new Set(
     alerts
-      .map(a => a.ml_competitor_items?.seller_name?.trim() || a.ml_competitor_items?.title?.trim() || '')
+      .map(competitorName)
       .filter(Boolean)
   )).sort((a, b) => a.localeCompare(b, 'es'))
 
-  function getAlertPanelTarget(alert: AlertItem) {
-    return alert.owner_lookup ?? alert.owner_product_id ?? alert.our_sku
+  function getAlertPanelTarget(alert: PublicationAlert) {
+    return alert.owner_product_id
   }
 
-  const visible = alerts.filter(a => {
-    if (!skuMap.has(a.our_sku)) return false
-    if (filter === 'unread' && a.read_at) return false
-    if (filterSku && a.our_sku !== filterSku) return false
-    if (filterRule && a.ml_price_alert_rules?.id !== filterRule) return false
-    if (filterCompetitor) {
-      const competitorName = a.ml_competitor_items?.seller_name?.trim() || a.ml_competitor_items?.title?.trim() || ''
-      if (competitorName !== filterCompetitor) return false
-    }
-    return true
+  const visible = filterPublicationAlerts(alerts, {
+    read: filter, sku: filterSku, rule: filterRule, competitor: filterCompetitor, status: filterStatus,
   })
-
-  const unreadCount = alerts.filter(a => !a.read_at && skuMap.has(a.our_sku)).length
-  const hasActiveFilters = filter !== 'unread' || !!filterSku || !!filterRule || !!filterCompetitor
+  const unreadCount = alerts.filter(a => !a.read_at).length
+  const hasActiveFilters = filter !== 'all' || filterStatus !== 'all' || !!filterSku || !!filterRule || !!filterCompetitor
 
   useEffect(() => {
-    if (!panelTarget) { setPanelData(null); return }
-    setPanelLoading(true)
-    fetch(`/api/product-panel/${encodeURIComponent(panelTarget)}`)
-      .then(r => r.json())
-      .then(data => setPanelData(data))
-      .finally(() => setPanelLoading(false))
+    if (!panelTarget) return
+    const controller = new AbortController()
+    fetch(`/api/product-panel/${encodeURIComponent(panelTarget)}`, { signal: controller.signal })
+      .then(async response => {
+        const data = await response.json()
+        if (!response.ok) throw new Error(data.error ?? 'No se pudo cargar la publicación.')
+        return data
+      })
+      .then(data => { if (!controller.signal.aborted) setPanelData(data) })
+      .catch(error => { if (!controller.signal.aborted) setPanelError(error instanceof Error ? error.message : 'No se pudo cargar la publicación.') })
+      .finally(() => { if (!controller.signal.aborted) setPanelLoading(false) })
+    return () => controller.abort()
   }, [panelTarget])
 
+  function openPanel(target: string | null) {
+    setPanelData(null)
+    setPanelError(null)
+    setPanelLoading(!!target)
+    setPanelTarget(target)
+  }
+
+  async function requestAction(url: string, method: string) {
+    const response = await fetch(url, { method })
+    if (!response.ok) {
+      const data = await response.json()
+      throw new Error(data.error ?? 'No se pudo guardar el cambio.')
+    }
+  }
+
   async function markRead(id: string) {
-    setAlerts(prev => prev.map(a => a.id === id ? { ...a, read_at: new Date().toISOString() } : a))
-    await fetch(`/api/alert-history/${id}`, { method: 'PATCH' })
+    setActionError(null)
+    try {
+      await requestAction(`/api/alert-history/${id}`, 'PATCH')
+      setAlerts(prev => updateAlertReadAt(prev, new Set([id]), new Date().toISOString()))
+    } catch (error) { setActionError(error instanceof Error ? error.message : 'No se pudo marcar la alerta.') }
   }
 
   async function markAllRead() {
-    const unread = visible.filter(a => !a.read_at)
-    const now = new Date().toISOString()
-    setAlerts(prev => prev.map(a => unread.find(u => u.id === a.id) ? { ...a, read_at: now } : a))
-    await Promise.all(unread.map(a => fetch(`/api/alert-history/${a.id}`, { method: 'PATCH' })))
+    setActionError(null)
+    const ids = [...new Set(visible.filter(a => !a.read_at).map(a => a.id))]
+    const results = await Promise.allSettled(ids.map(id => requestAction(`/api/alert-history/${id}`, 'PATCH')))
+    const saved = new Set(ids.filter((_, index) => results[index].status === 'fulfilled'))
+    setAlerts(prev => updateAlertReadAt(prev, saved, new Date().toISOString()))
+    if (saved.size !== ids.length) setActionError('No se pudieron marcar todas las alertas. Volvé a intentarlo.')
   }
 
   async function deleteRead() {
     if (!confirm('¿Eliminar todas las alertas leídas?')) return
     setDeletingRead(true)
-    setAlerts(prev => prev.filter(a => !a.read_at))
-    await fetch('/api/alert-history', { method: 'DELETE' })
-    setDeletingRead(false)
+    setActionError(null)
+    try {
+      await requestAction('/api/alert-history', 'DELETE')
+      setAlerts(prev => prev.filter(a => !a.read_at))
+    } catch (error) { setActionError(error instanceof Error ? error.message : 'No se pudieron eliminar las alertas.') }
+    finally { setDeletingRead(false) }
   }
 
   async function deleteAlert(id: string) {
-    setAlerts(prev => prev.filter(a => a.id !== id))
-    await fetch(`/api/alert-history/${id}`, { method: 'DELETE' })
+    setActionError(null)
+    try {
+      await requestAction(`/api/alert-history/${id}`, 'DELETE')
+      setAlerts(prev => removeAlerts(prev, new Set([id])))
+    } catch (error) { setActionError(error instanceof Error ? error.message : 'No se pudo eliminar la alerta.') }
   }
 
   function resetFilters() {
-    setFilter('unread')
+    setFilter('all')
+    setFilterStatus('all')
     setFilterSku('')
     setFilterRule('')
     setFilterCompetitor('')
@@ -184,7 +195,7 @@ export default function HistorySection({
     if (salePrice != null) entries.push({ key: 'our-sale', label: 'Mi precio oferta', price: salePrice, isOurs: true, oursType: 'sale' })
     else if (pubPrice != null) entries.push({ key: 'our-pub', label: 'Mi precio', price: pubPrice, isOurs: true, oursType: 'pub' })
     for (const c of panelData.competitors) {
-      if (c.price != null && !c.paused) {
+      if (c.price != null && !c.paused && !['paused', 'closed'].includes(c.status ?? '')) {
         entries.push({ key: c.id, label: c.seller_name ?? c.title ?? c.id, price: c.price, isOurs: false, usd_price: c.usd_price, thumbnail: c.thumbnail, permalink: c.permalink, seller: c.seller_name })
       }
     }
@@ -200,9 +211,10 @@ export default function HistorySection({
 
   return (
     <section>
+      {actionError && <p role="alert" className="mb-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">{actionError}</p>}
       {/* Toolbar */}
       <div className="bg-white border border-gray-100 rounded-xl mb-4 overflow-hidden">
-        <div className="flex items-center gap-2 px-4 py-2.5 border-b border-gray-100">
+        <div className="flex flex-wrap items-center gap-2 px-4 py-2.5 border-b border-gray-100">
           {/* Read/all segmented toggle */}
           <div className="flex rounded-lg bg-gray-50 p-0.5 shrink-0">
             <button
@@ -224,8 +236,19 @@ export default function HistorySection({
 
           <div className="h-5 w-px bg-gray-200 mx-1 shrink-0" />
 
+          <select
+            aria-label="Estado de la publicación"
+            value={filterStatus}
+            onChange={e => setFilterStatus(e.target.value as 'all' | 'active')}
+            className="bg-transparent border-0 text-xs text-gray-700 font-medium focus:outline-none focus:ring-0 pr-7 py-1 cursor-pointer"
+          >
+            <option value="all">Todos los estados</option>
+            <option value="active">Activos</option>
+          </select>
+
           {rules.length > 0 && (
             <select
+              aria-label="Regla de alerta"
               value={filterRule}
               onChange={e => setFilterRule(e.target.value)}
               className="bg-transparent border-0 text-xs text-gray-700 font-medium focus:outline-none focus:ring-0 pr-7 py-1 cursor-pointer hover:text-gray-900"
@@ -236,6 +259,7 @@ export default function HistorySection({
           )}
 
           <select
+            aria-label="SKU"
             value={filterSku}
             onChange={e => setFilterSku(e.target.value)}
             className="bg-transparent border-0 text-xs text-gray-700 font-medium focus:outline-none focus:ring-0 pr-7 py-1 cursor-pointer hover:text-gray-900"
@@ -246,6 +270,7 @@ export default function HistorySection({
 
           {competitorOptions.length > 0 && (
             <select
+              aria-label="Competidor"
               value={filterCompetitor}
               onChange={e => setFilterCompetitor(e.target.value)}
               className="bg-transparent border-0 text-xs text-gray-700 font-medium focus:outline-none focus:ring-0 pr-7 py-1 cursor-pointer hover:text-gray-900"
@@ -328,8 +353,8 @@ export default function HistorySection({
 
             return (
               <div
-                key={alert.id}
-                onClick={() => setPanelTarget(isActive ? null : panelLookup)}
+                key={alert.row_key}
+                onClick={() => openPanel(isActive ? null : panelLookup)}
                 className={`group relative bg-white border border-gray-100 border-l-4 ${toneConfig.border} rounded-xl transition-all cursor-pointer hover:shadow-md hover:border-gray-200 ${isActive ? 'ring-2 ring-blue-400 ring-offset-1' : ''} ${isRead ? 'opacity-70' : ''}`}
               >
                 <div className="flex gap-3 p-4">
@@ -354,11 +379,18 @@ export default function HistorySection({
                   <div className="flex-1 min-w-0">
                     {/* Row 1: SKU + Title + time */}
                     <div className="flex items-baseline gap-2 min-w-0">
-                      <span className="font-mono text-[10px] bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded shrink-0">{alert.our_sku}</span>
+                      <span className="font-mono text-[10px] bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded shrink-0">{alert.owner_sku?.trim() || 'Sin SKU'}</span>
                       <h3 className="text-sm font-semibold text-gray-900 truncate flex-1">
-                        {alert.owner_title ?? skuMap.get(alert.our_sku) ?? alert.our_sku}
+                        {alert.owner_title}
                       </h3>
                       <span className="text-[11px] text-gray-400 shrink-0">{formatRelative(alert.fired_at)}</span>
+                    </div>
+
+                    <div className="flex items-center gap-2 mt-1 text-[10px]">
+                      <span className="font-mono text-gray-500">{alert.owner_product_id}</span>
+                      <span className={`px-1.5 py-0.5 rounded ${STATUS_COLOR[alert.owner_status ?? ''] ?? 'bg-gray-100 text-gray-600'}`}>
+                        {STATUS_LABEL[alert.owner_status ?? ''] ?? alert.owner_status ?? 'Sin estado'}
+                      </span>
                     </div>
 
                     {/* Row 2: rule + competitor */}
@@ -453,14 +485,14 @@ export default function HistorySection({
 
       {/* Product panel — slides in from the right */}
       {panelTarget && (
-        <div className="fixed inset-0 z-40 bg-black/20 backdrop-blur-[1px]" onClick={() => setPanelTarget(null)}>
+        <div className="fixed inset-0 z-40 bg-black/20 backdrop-blur-[1px]" onClick={() => openPanel(null)}>
           <div
             className="absolute top-0 right-0 h-full w-full md:w-130 bg-white shadow-2xl flex flex-col"
             onClick={e => e.stopPropagation()}
           >
             {panelLoading || !panelData ? (
               <div className="flex-1 flex items-center justify-center text-gray-400 text-sm">
-                {panelLoading ? 'Cargando...' : 'Sin datos'}
+                {panelLoading ? 'Cargando...' : panelError ?? 'Sin datos'}
               </div>
             ) : (
               <>
@@ -472,7 +504,7 @@ export default function HistorySection({
                       {panelData.product?.title ?? visible.find(a => getAlertPanelTarget(a) === panelTarget)?.owner_title ?? panelTarget}
                     </h2>
                   </div>
-                  <button onClick={() => setPanelTarget(null)} className="text-gray-400 hover:text-gray-700 text-2xl leading-none shrink-0">×</button>
+                  <button onClick={() => openPanel(null)} className="text-gray-400 hover:text-gray-700 text-2xl leading-none shrink-0">×</button>
                 </div>
 
                 {/* Image + key info */}
