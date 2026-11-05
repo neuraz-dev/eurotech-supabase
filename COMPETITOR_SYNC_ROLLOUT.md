@@ -37,7 +37,7 @@ se probó dos veces dentro de una transacción local revertida, incluyendo la
 ausencia de permisos para `anon`, `authenticated` y `service_role`, y el rechazo
 de configuración faltante en Vault.
 
-## Producción — despliegue aplicado; ejecución automática pendiente de confirmar
+## Producción — despliegue y ejecución automática comprobados
 
 El acceso SSH configurado agotó el tiempo de espera; el conector de Coolify es
 de solo lectura. El diagnóstico ejecutado por el usuario a las 17:06 UTC confirmó
@@ -57,10 +57,19 @@ El usuario ejecutó el despliegue revisado desde la terminal general del servido
   no significa que todos los rivales hayan podido sincronizarse.
 - Se respaldó la función anterior en
   `/tmp/ml-sync-competitor-backup.zeJL4d2s` antes de reemplazar su código.
-- Sigue pendiente comprobar la siguiente ejecución automática en producción y
-  revisar individualmente los 26 rivales que fallan. Los códigos concretos
-  de cada fallo de producción deben confirmarse en los registros del runtime;
-  las respuestas 404/403 documentadas arriba corresponden a las pruebas locales.
+- El diagnóstico posterior compartido por el usuario confirmó la ejecución
+  automática del cron 27 el **5 de noviembre de 2026 a las 20:05:00 UTC**
+  (**3:05 p. m. de Bogotá**). `cron.job_run_details` registró `succeeded` y la
+  solicitud HTTP **174809** respondió sin timeout: **49** rivales actualizados,
+  **26** fallidos y **0** errores de alertas. La última actualización de datos
+  avanzó a **20:05:04.651 UTC**. La programación y las actualizaciones automáticas
+  quedan verificadas con esta evidencia, además de la ejecución controlada.
+- Ambas solicitudes respondieron HTTP **500** y `success=false` por los fallos
+  parciales. El estado `succeeded` del cron confirma el envío SQL; no implica
+  que todos los rivales se hayan sincronizado. Queda pendiente revisar
+  individualmente los 26 rivales que fallan. Sus códigos concretos de error
+  en producción deben confirmarse en los registros del runtime; las respuestas
+  404/403 documentadas arriba corresponden a las pruebas locales.
 
 La primera ejecución del instalador pegado como heredoc llegó solo a `--check`:
 `docker exec -i` consumía las líneas restantes del bloque durante las consultas
