@@ -27,6 +27,10 @@ enabled = false
 [functions.ml-search-rivals]
 verify_jwt = false
 
+# The handler checks the internal sync secret or service credential itself.
+[functions.ml-sync-competitor]
+verify_jwt = false
+
 [db]
 # Port to use for the local database URL.
 port = 54322

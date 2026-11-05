@@ -73,7 +73,7 @@ export default async function DashboardPage() {
       </div>
 
       <div>
-        <h2 className="text-xs font-semibold text-[rgba(42,31,29,0.55)] uppercase tracking-wider mb-3">Última sincronización</h2>
+        <h2 className="text-xs font-semibold text-[rgba(42,31,29,0.55)] uppercase tracking-wider mb-3">Última actualización de datos</h2>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <SyncCard
             title="Productos propios"

@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "test:sync": "node --experimental-strip-types tests/ml-sync-competitor.test.ts",
     "test:alerts": "node --experimental-strip-types tests/price-alerts.test.ts"
   },
   "dependencies": {
