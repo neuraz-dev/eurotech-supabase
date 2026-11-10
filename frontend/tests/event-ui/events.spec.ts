@@ -42,7 +42,7 @@ async function mock(page:Page,{failRead=false,restoreBlocked=false,recovery=fals
       if(url.searchParams.get('read')==='read')base=base.filter(r=>r.read_at)
       if(url.searchParams.get('read')==='unread')base=base.filter(r=>!r.read_at)
       counts.total=base.length;counts.disadvantage=base.length
-      const offset=url.searchParams.get('cursor')?50:0
+      const offset=url.searchParams.has('page')?(Number(url.searchParams.get('page'))-1)*50:url.searchParams.get('cursor')?50:0
       return reply({items:base.slice(offset,offset+50),nextCursor:base.length>offset+50?'page-two':null,counts})
     }
     if(request.method()==='DELETE'){
@@ -157,6 +157,8 @@ test('authenticated real API is bounded and rejects malformed filters without wr
   await anonymous.dispose()
   expect((await request.get('/api/alert-history?scope=invalid')).status()).toBe(400)
   expect((await request.get('/api/alert-history?cursor=invalid')).status()).toBe(400)
+  for(const value of ['0','-1','1.5','abc','100001']) expect((await request.get('/api/alert-history?page='+value)).status()).toBe(400)
+  expect((await request.get('/api/alert-history?page=1&cursor=invalid')).status()).toBe(400)
   const response=await request.get('/api/alert-history?scope=history'),data=await response.json()
   expect(response.status()).toBe(200)
   expect(data.items.length).toBeLessThanOrEqual(50)

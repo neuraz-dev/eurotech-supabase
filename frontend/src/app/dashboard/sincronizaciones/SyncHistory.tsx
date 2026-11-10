@@ -1,4 +1,5 @@
 'use client'
+import Pagination from '@/components/Pagination'
 import Link from 'next/link'
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import Select from '@/components/Select'
@@ -147,6 +148,8 @@ export default function SyncHistory({ id }: { id?: string }) {
             setOutcome(fresh.run.warning_count > 0 ? 'warning' : '')
           }
         }
+        const lastPage = Math.max(1, Math.ceil(fresh.count / 50))
+        if (page > lastPage) { setPage(lastPage); setLoading(true); return }
         setData(fresh)
         setError(null)
         setLoading(false)
@@ -509,32 +512,8 @@ export default function SyncHistory({ id }: { id?: string }) {
             )
           })}
       </div>
-      <nav
-        aria-label='Paginación'
-        className='flex items-center justify-between gap-3'
-      >
-        <button
-          disabled={page === 1 || loading}
-          onClick={() => {
-            setPage((v) => v - 1)
-            setLoading(true)
-          }}
-          className='rounded-lg border px-3 py-2 text-sm disabled:opacity-40'
-        >
-          ← Anterior
-        </button>
-        <span className='text-xs text-slate-500'>Página {page}</span>
-        <button
-          disabled={loading || page * 50 >= (data?.count ?? 0)}
-          onClick={() => {
-            setPage((v) => v + 1)
-            setLoading(true)
-          }}
-          className='rounded-lg border px-3 py-2 text-sm disabled:opacity-40'
-        >
-          Siguiente →
-        </button>
-      </nav>
+      <Pagination currentPage={page} totalPages={Math.ceil((data?.count ?? 0) / 50)} disabled={loading}
+        onPageChange={next => { setPage(next); setLoading(true) }} />
     </div>
   )
 }

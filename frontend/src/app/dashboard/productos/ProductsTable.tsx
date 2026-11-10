@@ -1,5 +1,6 @@
 'use client'
 
+import Pagination from '@/components/Pagination'
 import CatalogBoard from '@/components/CatalogBoard'
 import { isSameCatalogRival, type CatalogPanel } from '@/lib/catalog'
 import ManualSyncControl from '@/components/ManualSyncControl'
@@ -562,6 +563,13 @@ export default function ProductsTable({
     initialProducts.length < totalCount,
   )
   const [selected, setSelected] = useState<Product | null>(null)
+  const panelOpen = selected !== null
+  useEffect(() => {
+    if (!panelOpen) return
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    return () => { document.body.style.overflow = previousOverflow }
+  }, [panelOpen])
   type ProductMedia = {
     attributes: unknown[] | null
     pictures: Product['pictures']
@@ -1224,6 +1232,8 @@ export default function ProductsTable({
       {/* Backdrop */}
       {selected && (
         <div
+          data-testid="product-panel-overlay"
+          aria-hidden="true"
           className="fixed inset-0 bg-black/20 z-30"
           onClick={() => setSelected(null)}
         />
@@ -1913,50 +1923,18 @@ export default function ProductsTable({
           )}
 
           {/* Paginador */}
-          {totalPages > 1 && (
-            <div className="flex items-center justify-between mt-4 px-1">
-              <p className="text-sm text-gray-400">
-                {currentPage * PAGE_SIZE + 1}–
-                {Math.min(
-                  (currentPage + 1) * PAGE_SIZE,
-                  filteredProducts.length,
-                )}{' '}
-                de {filteredProducts.length}
-              </p>
-              <div className="flex items-center gap-1">
-                <button
-                  onClick={() => setCurrentPage((p) => Math.max(0, p - 1))}
-                  disabled={currentPage === 0}
-                  className="px-3 py-1.5 rounded-lg border border-gray-200 text-sm text-gray-600 hover:bg-gray-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                >
-                  ← Anterior
-                </button>
-                {Array.from({ length: totalPages }, (_, i) => i).map((i) => (
-                  <button
-                    key={i}
-                    onClick={() => setCurrentPage(i)}
-                    className={`w-8 h-8 rounded-lg text-sm font-medium transition-colors ${i === currentPage ? 'bg-gray-900 text-white' : 'border border-gray-200 text-gray-600 hover:bg-gray-50'}`}
-                  >
-                    {i + 1}
-                  </button>
-                ))}
-                <button
-                  onClick={() =>
-                    setCurrentPage((p) => Math.min(totalPages - 1, p + 1))
-                  }
-                  disabled={currentPage === totalPages - 1}
-                  className="px-3 py-1.5 rounded-lg border border-gray-200 text-sm text-gray-600 hover:bg-gray-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                >
-                  Siguiente →
-                </button>
-              </div>
-            </div>
-          )}
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 px-1">
+            <p className="text-sm text-gray-400">
+              {filteredProducts.length ? currentPage * PAGE_SIZE + 1 : 0}–{Math.min((currentPage + 1) * PAGE_SIZE, filteredProducts.length)} de {filteredProducts.length}
+            </p>
+            <Pagination currentPage={currentPage + 1} totalPages={totalPages}
+              onPageChange={page => setCurrentPage(page - 1)} label="Paginación de productos" />
+          </div>
         </>
       )}
 
       {/* Detail panel — slides in from the right */}
-      {(() => {
+      {selected && (() => {
         const comps = selected ? getCompetitorsForProduct(selected).filter(rival =>
           !selected.catalog_listing || !selected.catalog_product_id ||
           !isSameCatalogRival(rival, selected.catalog_product_id, catalogData[selected.id]?.snapshot ?? null)) : []
@@ -1984,7 +1962,8 @@ export default function ProductsTable({
           : RIVAL_SEARCH_COST_ESTIMATE
         return (
           <div
-            className={`fixed top-0 right-0 h-full w-full md:w-[600px] bg-white shadow-2xl z-40 flex flex-col transition-transform duration-300 ease-in-out ${selected ? 'translate-x-0' : 'translate-x-full'}`}
+            data-testid="product-detail-panel"
+            className="fixed inset-y-0 right-0 z-40 flex h-dvh w-full max-w-[600px] min-w-0 flex-col bg-white shadow-2xl"
           >
             {selected && (
               <>
@@ -2107,7 +2086,7 @@ export default function ProductsTable({
                 </div>
 
                 {/* Tab body */}
-                <div className="overflow-y-auto flex-1">
+                <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
                   {selected.catalog_listing && panelTab === 'catalog' && <CatalogBoard
                     key={selected.id}
                     product={selected}

@@ -27,6 +27,9 @@ body {
     radial-gradient(circle at top left, rgba(185, 11, 8, 0.08), transparent 24%),
     radial-gradient(circle at bottom right, rgba(185, 11, 8, 0.12), transparent 18%),
     linear-gradient(180deg, rgba(255, 255, 255, 0.92) 0%, rgba(249, 245, 244, 0.96) 100%);
+  background-repeat: no-repeat;
+  background-attachment: fixed;
+  background-size: cover;
   min-height: 100vh;
 }
 

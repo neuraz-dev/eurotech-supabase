@@ -23,12 +23,16 @@ export async function loadAlertPage(params=new URLSearchParams()) {
       ;[date,id]=cursor
     } catch {throw new ApiError(400,'Cursor inválido')}
   }
-  const {data,error}=await createAdminClient().schema('ml').rpc('list_monitor_alerts',{
-    p_filters:alertFilters(params),p_cursor_date:date,p_cursor_id:id,
-  })
+  const numbered = params.has('page')
+  const page = Number(params.get('page') ?? 1)
+  if (numbered && (!Number.isSafeInteger(page) || page < 1 || page > 100000)) throw new ApiError(400, 'Página inválida')
+  if (numbered && params.get('cursor')) throw new ApiError(400, 'Usá página o cursor, no ambos')
+  const {data,error}=numbered
+    ? await createAdminClient().schema('ml').rpc('list_monitor_alerts_page',{p_filters:alertFilters(params),p_page:page})
+    : await createAdminClient().schema('ml').rpc('list_monitor_alerts',{p_filters:alertFilters(params),p_cursor_date:date,p_cursor_id:id})
   if(error)throw error
   const rows=data.items as AlertEvent[], items=rows.slice(0,50), last=items.at(-1)
-  return {...data,items,nextCursor:rows.length>50&&last?Buffer.from(JSON.stringify([last.fired_at,last.id])).toString('base64url'):null}
+  return {...data,items,...(numbered?{page}:{}),nextCursor:rows.length>50&&last?Buffer.from(JSON.stringify([last.fired_at,last.id])).toString('base64url'):null}
 }
 export async function alertActor() {
   const {data:{user},error}=await (await createClient()).auth.getUser()

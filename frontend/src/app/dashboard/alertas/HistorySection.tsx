@@ -1,6 +1,7 @@
 'use client'
 import { useEffect, useState, useSyncExternalStore } from 'react'
 import Image from 'next/image'
+import Pagination from '@/components/Pagination'
 import Select from '@/components/Select'
 import AlertTabs from '@/components/AlertTabs'
 import AlertEventModal from '@/components/AlertEventModal'
@@ -17,7 +18,7 @@ const defaults:Filters={scope:'inbox',read:'all',from:'',to:'',sku:'',seller:'',
 export default function HistorySection({initialPage,options,rules}:{initialPage:AlertPage;options:AlertOptions;rules:AlertRule[]}){
   const zone=useSyncExternalStore(subscribe,timezone,()=> 'UTC')
   const [filters,setFilters]=useState(defaults),[page,setPage]=useState(initialPage)
-  const [cursors,setCursors]=useState<string[]>(['']),[index,setIndex]=useState(0),[refresh,setRefresh]=useState(0)
+  const [index,setIndex]=useState(0),[refresh,setRefresh]=useState(0)
   const [loading,setLoading]=useState(false),[error,setError]=useState<string|null>(null)
   const [pending,setPending]=useState<string|null>(null),[notice,setNotice]=useState<string|null>(null)
   const [selected,setSelected]=useState<string|null>(null),[showRules,setShowRules]=useState(false)
@@ -30,7 +31,7 @@ export default function HistorySection({initialPage,options,rules}:{initialPage:
   try {
     const bounds=dateBounds(filters.from,filters.to)
     const params=new URLSearchParams({...filters,from:bounds.from,to:bounds.to})
-    if(cursors[index])params.set('cursor',cursors[index])
+    params.set('page', String(index + 1))
     query=params.toString()
   } catch(e){filterError=e instanceof Error?e.message:'Rango inválido'}
   useEffect(()=>{
@@ -39,13 +40,13 @@ export default function HistorySection({initialPage,options,rules}:{initialPage:
     fetch('/api/alert-history?'+query,{signal:controller.signal}).then(async response=>{
       const data=await response.json()
       if(!response.ok||!Array.isArray(data.items)||!data.counts)throw new Error(data.error??'No se pudo cargar el listado')
-      if(!controller.signal.aborted){setPage(data);setError(null)}
+      if(!controller.signal.aborted){setPage(data);setError(null);setIndex(previous=>Math.min(previous,Math.max(0,Math.ceil(data.counts.total/50)-1)))}
     }).catch(e=>{if(!controller.signal.aborted)setError(e instanceof Error?e.message:'Error de conexión')})
       .finally(()=>{if(!controller.signal.aborted)setLoading(false)})
     return ()=>controller.abort()
   },[query,refresh])
   function change(changes:Partial<Filters>){
-    setFilters(previous=>({...previous,...changes}));setCursors(['']);setIndex(0);setLoading(true)
+    setFilters(previous=>({...previous,...changes}));setIndex(0);setLoading(true)
   }
   function reload(){setLoading(true);setRefresh(value=>value+1)}
   async function action(url:string,method:string,body?:object){
@@ -141,11 +142,8 @@ export default function HistorySection({initialPage,options,rules}:{initialPage:
           </article>
         })}
       </div>
-      <nav aria-label="Paginación de alertas" className="flex items-center justify-between gap-3">
-        <button className={field} disabled={index===0||loading} onClick={()=>{setIndex(v=>v-1);setLoading(true)}}>← Anterior</button>
-        <span className="text-xs text-slate-500">Página {index+1} · hasta 50 eventos por página</span>
-        <button className={field} disabled={!page.nextCursor||loading} onClick={()=>{setCursors(previous=>[...previous.slice(0,index+1),page.nextCursor!]);setIndex(v=>v+1);setLoading(true)}}>Siguiente →</button>
-      </nav>
+      <Pagination currentPage={index + 1} totalPages={Math.ceil(page.counts.total / 50)} disabled={loading}
+        onPageChange={next => { setIndex(next - 1); setLoading(true) }} label="Paginación de alertas" />
     </section>
     {selected&&<AlertEventModal id={selected} zone={zone} onClose={()=>setSelected(null)}/>}
     {showRules&&<MonitorDialog title="Reglas de alerta" onClose={()=>setShowRules(false)}><RulesSection initialRules={rules} skus={options.skus.map(sku=>({sku,title:sku}))}/></MonitorDialog>}

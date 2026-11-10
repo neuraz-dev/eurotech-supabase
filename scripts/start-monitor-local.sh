@@ -63,6 +63,7 @@ cp "$ROOT_DIR"/supabase/migrations/*_monitor_source_resolution.sql "$LOCAL_DIR/s
 cp "$ROOT_DIR"/supabase/migrations/*_monitor_7270_dynamic_catalog.sql "$LOCAL_DIR/supabase/migrations/"
 cp "$ROOT_DIR"/supabase/migrations/*_manual_sync_history.sql "$LOCAL_DIR/supabase/migrations/"
 cp "$ROOT_DIR"/supabase/migrations/*_catalog_offer_snapshots.sql "$LOCAL_DIR/supabase/migrations/"
+cp "$ROOT_DIR"/supabase/migrations/*_numbered_alert_pagination.sql "$LOCAL_DIR/supabase/migrations/"
 cp "$ROOT_DIR/supabase/local/fixture-guard.sql" "$LOCAL_DIR/supabase/migrations/20261109012208_local_fixture_guard.sql"
 if [[ ! -e "$LOCAL_DIR/supabase/functions" ]]; then ln -s "$ROOT_DIR/supabase/functions" "$LOCAL_DIR/supabase/functions"; fi
 # The CLI treats an existing stopped database as an already-started stack.

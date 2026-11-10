@@ -139,6 +139,7 @@ test('history remains accessible after reload and reports all counts', async ({ 
 test('history applies browser-local complete-day boundaries and custom filters', async ({ page }) => {
   const requests = await mock(page)
   await page.goto('/dashboard/sincronizaciones')
+  await expect(page.getByRole('link', { name: 'Ver log', exact: true })).toBeVisible()
   await page.getByLabel('Desde', { exact: true }).fill('2026-11-09')
   await page.getByLabel('Hasta', { exact: true }).fill('2026-11-09')
   await expect.poll(() =>
@@ -230,6 +231,8 @@ test('authenticated real history API is bounded and its completed log opens with
     item.status === 'completed' && item.updated_count > 0
   )
   test.skip(!completed, 'No hay una ejecución real completada en este ambiente')
+  const saved = await (await request.get(`/api/manual-sync/${completed.id}`)).json()
+  expect(saved.items.length).toBeGreaterThan(0)
   await page.goto(`/dashboard/sincronizaciones/${completed.id}`)
   await expect(
     page.getByRole('heading', {
@@ -238,7 +241,7 @@ test('authenticated real history API is bounded and its completed log opens with
     }),
   ).toBeVisible()
   await expect(
-    page.getByText('Publicación y precios guardados.', { exact: true }),
+    page.getByText(saved.items[0].message, { exact: true }).first(),
   ).toBeVisible()
   await page.screenshot({
     path: '/tmp/monitor-manual-history-desktop.png',
