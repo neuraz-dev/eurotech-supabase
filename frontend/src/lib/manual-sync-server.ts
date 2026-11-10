@@ -18,8 +18,15 @@ export async function startSync(
   if (
     !actions.includes(action) || origin.length > 100 ||
     (action === 'product' && !/^ML[AU]\d+$/.test(targetId ?? '')) ||
-    (action !== 'product' && targetId !== null)
+    (targetId !== null && (!['product', 'catalog'].includes(action) || !/^ML[AU]\d+$/.test(targetId)))
   ) throw new ApiError(400, 'Alcance inválido')
+  if (action === 'catalog' && targetId) {
+    const { data, error } = await createAdminClient().schema('ml').from('ml_products')
+      .select('catalog_product_id,catalog_listing').eq('id', targetId).maybeSingle()
+    if (error) throw error
+    if (!data) throw new ApiError(404, 'No se encontró la publicación')
+    if (!data.catalog_listing || !data.catalog_product_id) throw new ApiError(400, 'La publicación no tiene catálogo asociado')
+  }
   syncId(requestKey)
   const { data: { user }, error: authError } = await (await createClient()).auth
     .getUser()

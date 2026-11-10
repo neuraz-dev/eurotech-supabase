@@ -1,5 +1,7 @@
 'use client'
 
+import CatalogBoard from '@/components/CatalogBoard'
+import { isSameCatalogRival, type CatalogPanel } from '@/lib/catalog'
 import ManualSyncControl from '@/components/ManualSyncControl'
 import {
   Fragment,
@@ -472,7 +474,7 @@ function RelationButton({
           d="M21 13v2a4 4 0 01-4 4H3"
         />
       </svg>
-      <span className="truncate">Sync: {relatedLabel}</span>
+      <span className="truncate">Relacionados: {relatedLabel}</span>
       <svg
         className="h-3.5 w-3.5 shrink-0 opacity-70"
         fill="none"
@@ -680,9 +682,36 @@ export default function ProductsTable({
   const [publicationFilter, setPublicationFilter] =
     useState<PublicationFilter>('all')
   const [showPaused, setShowPaused] = useState(false)
-  const [panelTab, setPanelTab] = useState<'competitors' | 'details'>(
+  const [panelTab, setPanelTab] = useState<'catalog' | 'competitors' | 'details'>(
     'competitors',
   )
+  const [catalogData, setCatalogData] = useState<Record<string, CatalogPanel>>({})
+  const [catalogFetch, setCatalogFetch] = useState<{ id: string; loading: boolean; error: string | null } | null>(null)
+  const [catalogRevision, setCatalogRevision] = useState(0)
+  const selectedCatalogId = selected?.catalog_listing ? selected.id : null
+  useEffect(() => {
+    if (!selectedCatalogId) return
+    const controller = new AbortController()
+    const id = selectedCatalogId
+    async function loadCatalog() {
+      setCatalogFetch({ id, loading: true, error: null })
+      try {
+        const response = await fetch(`/api/product-panel/${encodeURIComponent(id)}`, { signal: controller.signal, cache: 'no-store' })
+        const data = await response.json()
+        if (!response.ok || !data.catalog) throw new Error(data.error ?? 'No se pudo cargar el catálogo')
+        if (controller.signal.aborted) return
+        setCatalogData(previous => ({ ...previous, [id]: data.catalog }))
+        if (data.product?.id === id) {
+          setSelected(previous => previous?.id === id ? { ...previous, ...data.product } : previous)
+        }
+        setCatalogFetch({ id, loading: false, error: null })
+      } catch (error) {
+        if (!controller.signal.aborted) setCatalogFetch({ id, loading: false, error: error instanceof Error ? error.message : 'No se pudo cargar el catálogo' })
+      }
+    }
+    void loadCatalog()
+    return () => controller.abort()
+  }, [selectedCatalogId, catalogRevision])
   const [currentPage, setCurrentPage] = useState(0)
   const [rivalSuggestions, setRivalSuggestions] = useState<
     Record<string, RivalSuggestion[]>
@@ -837,7 +866,13 @@ export default function ProductsTable({
     }
   }
 
+  function selectProduct(p: Product) {
+    setPanelTab(p.catalog_listing ? 'catalog' : 'competitors')
+    setSelected(p)
+  }
+
   function handleSelect(p: Product) {
+    setPanelTab(p.catalog_listing ? 'catalog' : 'competitors')
     setSelected(selected?.id === p.id ? null : p)
   }
 
@@ -1482,7 +1517,7 @@ export default function ProductsTable({
                                 aria-label={`Abrir ${p.id}`}
                                 onClick={(event) => {
                                   event.stopPropagation()
-                                  setSelected(p)
+                                  selectProduct(p)
                                 }}
                                 className="text-left text-sm font-medium text-gray-900 focus-visible:outline-2"
                               >
@@ -1658,7 +1693,7 @@ export default function ProductsTable({
                             aria-label={`Abrir ${p.id}`}
                             onClick={(event) => {
                               event.stopPropagation()
-                              setSelected(p)
+                              selectProduct(p)
                             }}
                             className="text-left text-sm font-medium text-gray-900 focus-visible:outline-2"
                           >
@@ -1806,7 +1841,7 @@ export default function ProductsTable({
                           aria-label={`Abrir ${p.id}`}
                           onClick={(event) => {
                             event.stopPropagation()
-                            setSelected(p)
+                            selectProduct(p)
                           }}
                           className="text-left text-sm font-medium text-gray-900 focus-visible:outline-2"
                         >
@@ -1922,7 +1957,9 @@ export default function ProductsTable({
 
       {/* Detail panel — slides in from the right */}
       {(() => {
-        const comps = selected ? getCompetitorsForProduct(selected) : []
+        const comps = selected ? getCompetitorsForProduct(selected).filter(rival =>
+          !selected.catalog_listing || !selected.catalog_product_id ||
+          !isSameCatalogRival(rival, selected.catalog_product_id, catalogData[selected.id]?.snapshot ?? null)) : []
         const compCount = comps.length
         const suggestions = selected
           ? (rivalSuggestions[selected.id] ?? [])
@@ -2005,15 +2042,6 @@ export default function ProductsTable({
                     <p className="font-mono text-xs text-slate-500">
                       {selected.id} · {selected.sku ?? 'Sin SKU'}
                     </p>
-                    <p className="mt-2 text-xl font-semibold">
-                      {formatPrice(
-                        referencePrice(selected).observation.normalizedAmount ??
-                          referencePrice(selected).observation.amount,
-                        referencePrice(selected).observation
-                          .normalizedCurrency ??
-                          referencePrice(selected).observation.currency,
-                      )}
-                    </p>
                     <p className="mt-1 text-xs text-slate-500">
                       Referencia:{' '}
                       {referencePrice(selected).reference === 'sale'
@@ -2042,6 +2070,10 @@ export default function ProductsTable({
 
                 {/* Tabs */}
                 <div className="flex border-b border-gray-100 shrink-0">
+                  {selected.catalog_listing && <button
+                    onClick={() => setPanelTab('catalog')}
+                    className={`flex-1 py-2.5 text-sm font-medium transition-colors ${panelTab === 'catalog' ? 'border-b-2 border-blue-600 text-blue-700 bg-blue-50/40' : 'text-gray-400 hover:text-gray-600'}`}
+                  >Catálogo</button>}
                   <button
                     onClick={() => setPanelTab('competitors')}
                     className={`flex-1 py-2.5 text-sm font-medium transition-colors flex items-center justify-center gap-2 ${panelTab === 'competitors' ? 'border-b-2 border-blue-600 text-blue-700 bg-blue-50/40' : 'text-gray-400 hover:text-gray-600'}`}
@@ -2076,6 +2108,15 @@ export default function ProductsTable({
 
                 {/* Tab body */}
                 <div className="overflow-y-auto flex-1">
+                  {selected.catalog_listing && panelTab === 'catalog' && <CatalogBoard
+                    key={selected.id}
+                    product={selected}
+                    data={catalogData[selected.id] ?? null}
+                    loading={catalogFetch?.id === selected.id ? catalogFetch.loading : !catalogData[selected.id]}
+                    error={catalogFetch?.id === selected.id ? catalogFetch.error : null}
+                    onRetry={() => setCatalogRevision(revision => revision + 1)}
+                    onChanged={async () => { setCatalogRevision(revision => revision + 1) }}
+                  />}
                   {/* ── Competitors tab ── */}
                   {panelTab === 'competitors' && (
                     <div className="p-4 space-y-4">

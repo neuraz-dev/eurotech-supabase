@@ -1,9 +1,9 @@
 'use client'
 import ManualSyncControl from '@/components/ManualSyncControl'
 import { useState } from 'react'
+import { formatAlertDate, relativeLabel } from '@/lib/price-alerts'
 import {
   compare,
-  comparisonText,
   linksForProduct,
   referencePrice,
   comparisonFx,
@@ -66,13 +66,25 @@ const scopeText = (link: CompetitorLink) =>
   link.scope === 'sku'
     ? `Todas las publicaciones del SKU ${link.our_sku}`
     : `Solo ${link.our_product_id}`
+function consultationDate(value: string) {
+  return formatAlertDate(value, Intl.DateTimeFormat().resolvedOptions().timeZone)
+}
+export function MarketplaceButton({ url, title }: { url: string | null | undefined; title: string }) {
+  const href = safeMarketplaceUrl(url)
+  if (!href) return null
+  return <a href={href} target="_blank" rel="noopener noreferrer"
+    aria-label={`Ver en Mercado Libre: ${title}`} title="Ver en Mercado Libre"
+    className="shrink-0 rounded-lg border border-slate-200 bg-white p-2 text-blue-700 hover:bg-blue-50 focus-visible:outline-2 focus-visible:outline-blue-600">
+    <svg aria-hidden="true" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M15 3h6v6M10 14 21 3M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/></svg>
+  </a>
+}
 export default function ComparisonBoard({
   product,
   rivals,
   compareCatalog = true,
   onChanged,
 }: {
-  product: OwnProduct
+  product: OwnProduct & { title?: string | null; permalink?: string | null; seller_name?: string | null }
   rivals: BoardRival[]
   compareCatalog?: boolean
   onChanged?: () => Promise<void>
@@ -86,6 +98,7 @@ export default function ComparisonBoard({
     rival: BoardRival
     link: CompetitorLink
   } | null>(null)
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [choices, setChoices] = useState<Record<string, string>>({})
   const fx = comparisonFx(product,rivals)
   const own = referencePrice({...product,fx_quote:fx}, compareCatalog)
@@ -161,64 +174,7 @@ export default function ComparisonBoard({
   return (
     <section aria-label="Comparación de precios" className="space-y-3">
       {product.sku?.trim()==='7270'&&onChanged&&<SourceRecoveryPanel sku="7270" onChanged={onChanged}/>}
-      <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-        <p className="text-xs uppercase tracking-wide text-slate-500">
-          Tu referencia ·{' '}
-          {own.reference === 'sale'
-            ? 'Oferta'
-            : own.reference === 'catalog'
-              ? 'Catálogo de esta MLU'
-              : 'Publicación'}
-        </p>
-        <p className="mt-1 text-xl font-semibold">
-          {money(
-            own.observation.normalizedAmount ?? own.observation.amount,
-            own.observation.normalizedCurrency ?? own.observation.currency,
-          )}
-        </p>
-        <p className="mt-1 text-xs text-slate-500">
-          Consulta:{' '}
-          {own.observation.observedAt
-            ? new Date(own.observation.observedAt).toLocaleString('es-UY')
-            : 'Sin consulta válida'}{' '}
-
-        </p>
-        <p className="mt-1 text-xs text-slate-500">
-          Comparación solo de precio. Envío y financiación no incluidos.
-        </p>
-        {product.catalog_listing && (
-          <div className="mt-3 border-t border-slate-200 pt-2 text-xs text-slate-600">
-            <p>
-              Menor precio observado:{' '}
-              {money(product.catalog_observation?.normalizedAmount ?? null)} ·{' '}
-              {product.catalog_observation?.offersConsulted ?? 0} ofertas de{' '}
-              {product.catalog_observation?.offersTotal ?? 'total desconocido'}{' '}
-              · Cobertura{' '}
-              {product.catalog_observation?.coverage ?? 'desconocida'}
-            </p>
-            <p>
-              Consulta:{' '}
-              {product.catalog_observation?.observedAt
-                ? new Date(
-                    product.catalog_observation.observedAt,
-                  ).toLocaleString('es-UY')
-                : 'Sin dato'}
-              . Observación de catálogo; no asigna posición sin equivalencia
-              revisada.
-            </p>
-            <p>
-              Adjudicación:{' '}
-              {adjudicationLabel(product)}
-              {product.catalog_competition?.observedAt
-                ? ` · ${new Date(product.catalog_competition.observedAt).toLocaleString('es-UY')}`
-                : ''}
-            </p>
-          </div>
-        )}
-        {onChanged && (
-          <ManualSyncControl action="rivals" origin="panel-precios" label="Actualizar todos los rivales y conversión" onComplete={async()=>{await onChanged?.()}}/>
-        )}
-      </div>
+      {onChanged && <ManualSyncControl action="rivals" origin="panel-precios" label="Actualizar todos los rivales y conversión" onComplete={async()=>{await onChanged?.()}}/>}
       {!onChanged && (
         <p className="text-xs text-slate-500">
           Para recuperar datos, cerrá el panel y usá «Actualizar propios y
@@ -255,47 +211,95 @@ export default function ComparisonBoard({
           Sin asociaciones para esta publicación.
         </p>
       )}
-      {rows.map(({ rival, links, result }) => {
+      <ol aria-label="Publicaciones por precio de menor a mayor" className="space-y-3">
+      {[...rows, null].sort((a, b) =>
+        (a ? a.result.rival?.normalizedAmount ?? Infinity : own.observation.normalizedAmount ?? Infinity) -
+        (b ? b.result.rival?.normalizedAmount ?? Infinity : own.observation.normalizedAmount ?? Infinity)
+      ).map((row) => {
+        if (!row) return (
+          <li key="own" className="rounded-xl border-2 border-blue-500 bg-blue-50 p-3 text-slate-900">
+            <div className="flex gap-3">
+              <span aria-label="Posición propia" className="min-w-8 text-2xl font-bold tabular-nums text-blue-800">{own.observation.normalizedAmount != null ? validPrices.filter(price => price < own.observation.normalizedAmount!).length + 1 : '—'}</span>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-start justify-between gap-3">
+                  <h3 className="text-sm font-semibold text-blue-800">Tu publicación</h3>
+                  <MarketplaceButton url={product.permalink} title={product.title ?? product.id} />
+                </div>
+                <p className="mt-1 text-xs text-slate-600">{product.id}{product.seller_name ? ` · ${product.seller_name}` : ''}</p>
+                <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-xl font-bold tabular-nums">{money(own.observation.normalizedAmount ?? own.observation.amount, own.observation.normalizedCurrency ?? own.observation.currency)}</p>
+                </div>
+                <p className="mt-1 text-xs text-slate-600">Consulta: {own.observation.observedAt ? consultationDate(own.observation.observedAt) : 'Sin consulta válida'}</p>
+                {product.catalog_listing && <details className="mt-2 text-xs">
+                  <summary className="cursor-pointer text-blue-800">Datos de catálogo</summary>
+        {product.catalog_listing && (
+          <div className="mt-3 border-t border-slate-200 pt-2 text-xs text-slate-600">
+            <p>
+              Menor precio observado:{' '}
+              {money(product.catalog_observation?.normalizedAmount ?? null)} ·{' '}
+              {product.catalog_observation?.offersConsulted ?? 0} ofertas de{' '}
+              {product.catalog_observation?.offersTotal ?? 'total desconocido'}{' '}
+              · Cobertura{' '}
+              {product.catalog_observation?.coverage ?? 'desconocida'}
+            </p>
+            <p>
+              Consulta:{' '}
+              {product.catalog_observation?.observedAt
+                ? consultationDate(product.catalog_observation.observedAt)
+                : 'Sin dato'}
+              . Observación de catálogo; no asigna posición sin equivalencia
+              revisada.
+            </p>
+            <p>
+              Adjudicación:{' '}
+              {adjudicationLabel(product)}
+              {product.catalog_competition?.observedAt
+                ? ` · ${new Date(product.catalog_competition.observedAt).toLocaleString('es-UY')}`
+                : ''}
+            </p>
+          </div>
+        )}
+                </details>}
+              </div>
+            </div>
+          </li>
+        )
+        const { rival, links, result } = row
         const link =
           links.find((link) => link.id === choices[rival.id]) ?? links[0]
-        const o = rival.observation
+        const o = result.rival ?? rival.observation
+        const relativePct = result.deltaPct == null ? null : -result.deltaPct
         return (
-          <article
+          <li
             key={rival.id}
-            className="rounded-xl border border-slate-200 p-4"
+            className="rounded-xl border border-slate-200 bg-white p-3"
           >
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <h3 className="text-sm font-semibold">
-                  {rival.title ?? rival.id}
-                </h3>
-                <p className="text-xs text-slate-500">
-                  {rival.target_kind === 'catalog'
-                    ? (rival.source_kind==='user_product'?'Producto del vendedor · Seguimiento dinámico':'Catálogo dinámico · Menor precio observado')
-                    : 'Publicación fija'}{' '}
-                  · {rival.id}
-                </p>
-              </div>
-              {result.status === 'comparable' && (
-                <span className="text-xs text-slate-500">
-                  Posición{' '}
-                  {validPrices.filter(
-                    (price) => price < result.rival!.normalizedAmount!,
-                  ).length + 1}
-                </span>
-              )}
-            </div>
-            <p className="mt-2 text-lg font-semibold">
-              {money(
-                o?.normalizedAmount ?? o?.amount ?? null,
-                o?.normalizedCurrency ?? o?.currency ?? null,
-              )}
-            </p>
-            <p
-              className={`text-sm font-medium ${result.meaning === 'disadvantage' ? 'text-red-700' : result.meaning === 'advantage' ? 'text-emerald-700' : 'text-slate-600'}`}
-            >
-              {comparisonText(result)}
-            </p>
+            <div className="flex gap-3">
+              <span aria-label="Posición" className="min-w-8 text-2xl font-bold tabular-nums text-slate-800">
+                {result.status === 'comparable' ? validPrices.filter(price => price < result.rival!.normalizedAmount!).length + 1 : '—'}
+              </span>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-start justify-between gap-3">
+                  <h3 className="text-sm font-semibold">{rival.title ?? rival.id}</h3>
+                  <MarketplaceButton url={o?.itemPermalink ?? rival.permalink ?? rival.source_url} title={rival.title ?? rival.id} />
+                </div>
+                <p className="mt-1 text-xs text-slate-500">{o?.itemId ?? rival.id} · {o?.sellerName ?? rival.seller_name ?? 'Vendedor sin identificar'}</p>
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+                  <p className="text-2xl font-bold tabular-nums">
+                    {money(
+                      o?.normalizedAmount ?? o?.amount ?? null,
+                      o?.normalizedCurrency ?? o?.currency ?? null,
+                    )}
+                  </p>
+                  <p className={`rounded-lg px-2 py-1 text-xs font-semibold ${relativePct == null ? 'bg-slate-100 text-slate-600' : relativePct < 0 ? 'bg-red-50 text-red-700' : relativePct > 0 ? 'bg-emerald-50 text-emerald-700' : 'bg-blue-50 text-blue-700'}`}>
+                    {relativeLabel(relativePct)}
+                  </p>
+                </div>
+                <button type="button" aria-expanded={!!expanded[rival.id]} aria-controls={`rival-details-${rival.id}`} onClick={() => setExpanded(prev => ({...prev, [rival.id]: !prev[rival.id]}))} className="mt-2 rounded text-xs font-semibold text-blue-700 hover:underline focus-visible:outline-2 focus-visible:outline-blue-600">
+                  {expanded[rival.id] ? 'cerrar detalles' : 'ver detalles'}
+                </button>
+                <div id={`rival-details-${rival.id}`} hidden={!expanded[rival.id]} className="mt-3 space-y-1 border-t border-slate-100 pt-3">
+                  <p className="text-xs text-slate-500">{rival.target_kind === 'catalog' ? (rival.source_kind === 'user_product' ? 'Producto del vendedor · Seguimiento dinámico' : 'Catálogo dinámico · Menor precio observado') : 'Publicación fija'} · {rival.id}</p>
             {result.reasons.includes('incompatible_fx') && (
               <p className="text-xs text-amber-800">
                 Actualizá propios y rivales para usar la misma cotización en
@@ -313,7 +317,7 @@ export default function ComparisonBoard({
               {o?.sellerName ?? rival.seller_name ?? 'Vendedor sin identificar'}{' '}
               · MLU observada: {o?.itemId ?? '—'} ·{' '}
               {o?.observedAt
-                ? new Date(o.observedAt).toLocaleString('es-UY')
+                ? consultationDate(o.observedAt)
                 : 'Sin consulta exitosa'}
             </p>
             {o?.currency === 'USD' && (
@@ -321,7 +325,7 @@ export default function ComparisonBoard({
                 Original: {money(o.amount, 'USD')} · Cotización{' '}
                 {o.fx?.rate ?? 'no disponible'} · {o.fx?.source ?? '—'} ·{' '}
                 {o.fx?.fetchedAt
-                  ? new Date(o.fx.fetchedAt).toLocaleString('es-UY')
+                  ? consultationDate(o.fx.fetchedAt)
                   : '—'}
               </p>
             )}
@@ -389,7 +393,7 @@ export default function ComparisonBoard({
                     ? 'Rechazada'
                     : 'Pendiente de revisión'}
                 {link.reviewed_at
-                  ? ` · ${new Date(link.reviewed_at).toLocaleString('es-UY')}`
+                  ? ` · ${consultationDate(link.reviewed_at)}`
                   : ''}
                 {link.review_source === 'legacy_manual_assignment' &&
                   ' · Reconocida por asignación manual previa'}
@@ -422,20 +426,14 @@ export default function ComparisonBoard({
                   {pending === link.id && <span role="status">Guardando…</span>}
                 </div>
               )}
-              {rival.permalink && (
-                <a
-                  className="mt-2 inline-block text-xs text-blue-700 underline"
-                  href={safeMarketplaceUrl(rival.permalink)??undefined}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  Ver en Mercado Libre
-                </a>
-              )}
             </div>
-          </article>
+                </div>
+              </div>
+            </div>
+          </li>
         )
       })}
+      </ol>
       {review && (
         <MonitorDialog
           title="Revisar equivalencia comercial"

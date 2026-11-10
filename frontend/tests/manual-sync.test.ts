@@ -216,3 +216,16 @@ test('credentials are redacted and failures retain useful categories', () => {
     'persistence',
   )
 })
+
+test('scoped catalog discovery includes only publications from the selected catalog', async () => {
+  const client = database(async req => {
+    if (req.url.includes('ml_sync_runs')) return Response.json({target_id:'MLU1'})
+    return Response.json([
+      {id:'MLU1',catalog_listing:true,catalog_product_id:'MLU100'},
+      {id:'MLU2',catalog_listing:false,catalog_product_id:'MLU100'},
+      {id:'MLU3',catalog_listing:true,catalog_product_id:'MLU200'},
+    ])
+  })
+  const result=await executeManualTask(client,task({kind:'discover',stage:'catalog'}),adapter)
+  assert.deepEqual(result.children.flatMap(child=>child.payload.map(row=>row.id)),['MLU1','MLU2'])
+})

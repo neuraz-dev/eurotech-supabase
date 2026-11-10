@@ -118,6 +118,13 @@ export async function executeManualTask(
       }[task.stage]
       let rows = await allRows<Record<string, unknown>>(client, table)
       if (task.stage === 'tracked') rows = rows.filter((row) => row.active)
+      if (task.stage === 'catalog' && run.data.target_id) {
+        const selected = rows.find(row => row.id === run.data.target_id)
+        if (!selected?.catalog_product_id || !selected.catalog_listing) {
+          throw new Error('La publicación no tiene catálogo asociado')
+        }
+        rows = rows.filter(row => row.catalog_product_id === selected.catalog_product_id)
+      }
       identities = rows.map(identityOf)
       if (task.stage === 'catalog') {
         const categories = [

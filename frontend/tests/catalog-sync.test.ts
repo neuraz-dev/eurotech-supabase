@@ -13,6 +13,7 @@ test('sync queries only catalogs, reuses offers, and preserves failed sources wi
   ]
   const client = createClient('https://db.test', 'test', { global: { fetch: async (input, init) => {
     const req = new Request(input, init)
+    if (req.url.includes('/rpc/record_catalog_snapshot')) return Response.json(null)
     if (req.method === 'PATCH') {
       const id = new URL(req.url).searchParams.get('id')!.replace('eq.', '')
       writes.push(id)
@@ -23,6 +24,8 @@ test('sync queries only catalogs, reuses offers, and preserves failed sources wi
   const result = await syncCatalog(client, { token: 'test', sellerId: 1, apiUrl: 'https://ml.test', fxUrl: 'https://ml.test/fx', fetcher: async (input) => {
     const url = String(input); calls.push(url)
     if (url.endsWith('/fx')) return Response.json({ rates: { UYU: 40 } })
+    if (url.includes('/items?ids=')) return Response.json([])
+    if (url.includes('/users/')) return Response.json({id:Number(url.split('/').pop()),nickname:'Vendedor'})
     if (url.includes('MLU404')) return new Response(null, { status: 404 })
     return Response.json({ results: [
       { item_id: 'MLU1', seller_id: 1, price: 100, currency_id: 'UYU' },

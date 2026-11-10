@@ -3,58 +3,45 @@ import type { SupabaseClient } from 'npm:@supabase/supabase-js@2'
 import { allRows } from './monitor-service.ts'
 import { fetchFx, type MlContext } from './ml-observation.ts'
 import { observe, positive, type PriceObservation } from './monitoring.ts'
+import { collectCatalogOffers, type CatalogProduct } from './catalog-offers.ts'
 
 export async function syncCatalog(
   client: SupabaseClient,
   context: Omit<MlContext, 'fx'> & { fxUrl?: string },
   reporting: SyncReporting = {},
 ) {
-  const allProducts = await allRows<{
-    id: string
-    catalog_product_id: string | null
-    catalog_listing: boolean | null
-    site_id: string | null
-    title: string | null
-    sku: string | null
-    permalink: string | null
-  }>(
-    client,
-    'ml_products',
-    'id,catalog_product_id,catalog_listing,site_id,title,sku,permalink',
-  )
-  const products = reporting.ids ? allProducts.filter(p => reporting.ids!.includes(p.id)) : allProducts
-  const fx = await fetchFx(context.fetcher, context.fxUrl),
-    fetcher = context.fetcher ?? fetch,
-    api = context.apiUrl ?? 'https://api.mercadolibre.com'
-  let updated = 0,
-    failed = 0,
-    skipped = 0
+  const allProducts = await allRows<CatalogProduct>(client, 'ml_products',
+    'id,catalog_product_id,catalog_listing,site_id,title,sku,permalink')
+  const products = reporting.ids ? allProducts.filter(product => reporting.ids!.includes(product.id)) : allProducts
+  const fx = await fetchFx(context.fetcher, context.fxUrl)
+  let updated = 0, failed = 0, skipped = 0
   const errors: { itemId: string; catalogId: string; message: string }[] = []
-  const offers = new Map<string, Promise<{
-    results: { item_id: string; seller_id: number; price: number; currency_id: string; condition?: string }[]
-    paging?: { total?: number }
-    observedAt: string
-  }>>()
-  const loadOffers = (catalogId: string) => {
-    let pending = offers.get(catalogId)
+  const catalogs = new Map<string, ReturnType<typeof collectCatalogOffers>>()
+  const load = (catalogId: string) => {
+    let pending = catalogs.get(catalogId)
     if (!pending) {
       pending = (async () => {
-        const response = await fetcher(
-          `${api}/products/${catalogId}/items?status=active&limit=20`,
-          { headers: { Authorization: `Bearer ${context.token}` }, signal: AbortSignal.timeout(20_000) },
-        )
-        if (!response.ok) throw Object.assign(new Error(`Catálogo HTTP ${response.status}`), { status: response.status, resource: `/products/${catalogId}/items` })
-        const data = await response.json()
-        if (!Array.isArray(data.results)) throw new Error('Respuesta de catálogo inválida')
-        return { ...data, observedAt: new Date().toISOString() }
+        try {
+          const result = await collectCatalogOffers(catalogId,
+            allProducts.filter(product => product.catalog_product_id === catalogId), { ...context, fx })
+          const saved = await client.schema('ml').rpc('record_catalog_snapshot', {
+            p_catalog: catalogId, p_snapshot: result.snapshot, p_error: null,
+          })
+          if (saved.error) throw new Error(`No se pudo guardar el catálogo: ${saved.error.message}`)
+          return result
+        } catch (error) {
+          const recorded = await client.schema('ml').rpc('record_catalog_snapshot', {
+            p_catalog: catalogId, p_snapshot: null, p_error: syncFailure(error, 'catálogo').message,
+          })
+          if (recorded.error) throw new Error(`No se pudo guardar el fallo del catálogo: ${recorded.error.message}`)
+          throw error
+        }
       })()
-      offers.set(catalogId, pending!)
+      catalogs.set(catalogId, pending)
     }
-    return pending!
+    return pending
   }
-  const syncProduct = async (product: typeof products[number]) => {
-    // A User Product groups the seller's own listings; it is not evidence that
-    // the publication belongs to a competitive catalog.
+  const syncProduct = async (product: CatalogProduct) => {
     const catalogId = product.catalog_product_id
     if (!catalogId) {
       skipped++
@@ -62,119 +49,43 @@ export async function syncCatalog(
       return
     }
     try {
-      const headers = { Authorization: `Bearer ${context.token}` },
-        data = await loadOffers(catalogId),
-        now = data.observedAt
-      const rows = data.results
-      const own = rows.find((row) => row.item_id === product.id)
-      const candidates = rows
-        .filter((row) => row.seller_id !== context.sellerId)
-        .map((row) => ({
-          row,
-          observation: observe(row.price, row.currency_id, now, 'catalog', fx),
-        }))
-      const sorted = candidates
-        .filter((row) => positive(row.observation.normalizedAmount))
-        .sort(
-          (a, b) =>
-            a.observation.normalizedAmount! - b.observation.normalizedAmount!,
-        )
-      const best = sorted[0] ?? candidates[0]
+      const { snapshot, competitions } = await load(catalogId)
+      const own = snapshot.offers.find(offer => offer.itemId === product.id)
+      const external = snapshot.offers.filter(offer => offer.sellerId !== context.sellerId)
+      const sorted = [...external].sort((a, b) => (a.observation.normalizedAmount ?? Infinity) - (b.observation.normalizedAmount ?? Infinity))
+      const best = sorted.find(offer => positive(offer.observation.normalizedAmount)) ?? sorted[0]
       const minimum: PriceObservation = {
-        ...(best?.observation ?? observe(null, null, now, 'catalog', fx)),
-        itemId: best?.row.item_id ?? null,
-        sellerId: best?.row.seller_id ?? null,
-        offersConsulted: rows.length,
-        offersTotal: data.paging?.total ?? null,
-        coverage:
-          data.paging?.total == null
-            ? 'unknown'
-            : data.paging.total > rows.length
-              ? 'partial'
-              : 'complete',
-        state: candidates.length ? 'observed' : 'no_external_offers',
+        ...(best?.observation ?? observe(null, null, snapshot.observedAt, 'catalog', fx)),
+        itemId: best?.itemId ?? null, sellerId: best?.sellerId ?? null,
+        offersConsulted: snapshot.offers.length, offersTotal: snapshot.total,
+        coverage: snapshot.coverage, state: external.length ? 'observed' : 'no_external_offers',
       }
-      const warnings: string[] = []
-      if (candidates.some(c => c.observation.amount != null && c.observation.normalizedAmount == null)) warnings.push('Hay ofertas sin conversión válida a UYU.')
-      if (minimum.coverage !== 'complete') warnings.push('La cobertura de ofertas es parcial o desconocida.')
-      let competition: Record<string, unknown> = {
-        state: 'not_verified',
-        itemId: product.id,
-        observedAt: null,
-        source: 'price_to_win',
-      }
-      if (product.catalog_listing) {
-        try {
-          const response = await fetcher(
-            `${api}/items/${product.id}/price_to_win?siteId=${encodeURIComponent(product.site_id ?? 'MLU')}&version=v2`,
-            { headers, signal: AbortSignal.timeout(15_000) },
-          )
-          if (response.ok) {
-            const evidence = await response.json()
-            if (
-              evidence.item_id === product.id &&
-              evidence.consistent !== false &&
-              [
-                'winning',
-                'competing',
-                'sharing_first_place',
-                'listed',
-              ].includes(evidence.status)
-            ) {
-              competition = {
-                state: evidence.status,
-                itemId: product.id,
-                winnerId: evidence.winner?.item_id ?? null,
-                observedAt: now,
-                source: 'price_to_win',
-              }
-            }
-          }
-        } catch {
-          /* unavailable evidence is never a loss or victory */
-        }
-      }
-      if (product.catalog_listing && competition.state === 'not_verified') warnings.push('No se pudo verificar la adjudicación del catálogo.')
-      const { error } = await client
-        .schema('ml')
-        .from('ml_products')
-        .update({
-          catalog_price: own?.price ?? null,
-          catalog_currency_id: own?.currency_id ?? null,
-          catalog_item_id: own?.item_id ?? null,
-          catalog_observed_at: now,
-          catalog_observation: minimum,
-          catalog_competition: competition,
-          fx_quote: fx,
-          buybox_price: minimum.normalizedAmount,
-          buybox_seller_id: minimum.sellerId,
-        })
-        .eq('id', product.id)
-        .select('id')
-        .single()
-      if (error) throw new Error(error.message)
+      const { error } = await client.schema('ml').from('ml_products').update({
+        catalog_price: own?.observation.amount ?? null,
+        catalog_currency_id: own?.observation.currency ?? null,
+        catalog_item_id: own?.itemId ?? null,
+        catalog_observed_at: snapshot.observedAt,
+        catalog_observation: minimum,
+        catalog_competition: competitions.get(product.id) ?? { state: 'not_verified', itemId: product.id, observedAt: null, source: 'price_to_win' },
+        fx_quote: fx,
+        // Legacy minimum-price fields are kept for compatibility. The new UI
+        // reads snapshot.buyBox exclusively for the actual catalog winner.
+        buybox_price: minimum.normalizedAmount,
+        buybox_seller_id: minimum.sellerId,
+      }).eq('id', product.id).select('id').single()
+      if (error) throw new Error(`No se pudo guardar la publicación: ${error.message}`)
       updated++
-      reporting.report?.({ entity_id: product.id, identity: identityOf(product), outcome: warnings.length ? 'warning' : 'updated', message: warnings.join(' ') || 'Precio de catálogo guardado.', operation: 'catálogo', resource: `/products/${catalogId}/items` })
+      reporting.report?.({ entity_id: product.id, identity: identityOf(product), outcome: snapshot.warnings.length ? 'warning' : 'updated', message: snapshot.warnings.join(' ') || 'Ofertas y precio de catálogo guardados.', operation: 'catálogo', resource: `/products/${catalogId}/items` })
     } catch (error) {
       failed++
       reporting.report?.({ entity_id: product.id, identity: identityOf(product), outcome: 'failed', ...syncFailure(error, 'catálogo') })
-      errors.push({
-        itemId: product.id, catalogId,
-        message: error instanceof Error ? error.message : 'Error de consulta',
-      })
+      errors.push({ itemId: product.id, catalogId, message: error instanceof Error ? error.message : 'Error de consulta' })
     }
   }
-  // Bound concurrency on the local machine and reuse offers for related MLUs.
   for (let offset = 0; offset < products.length; offset += 4) {
     await Promise.all(products.slice(offset, offset + 4).map(syncProduct))
   }
-  return {
-    catalog_prices_updated: updated,
-    items_failed: failed,
-    items_skipped: skipped,
-    errors,
-    success: failed === 0,
-  }
+  return { catalog_prices_updated: updated, items_failed: failed, items_skipped: skipped, errors, success: failed === 0 }
 }
 
 // Preserve the category-name refresh previously performed by /api/sync-catalog.
