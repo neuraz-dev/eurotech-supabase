@@ -1,7 +1,7 @@
 @import "tailwindcss";
 
 :root {
-  --background: #faf6f5;
+  --background: #ffffff;
   --foreground: #2a1f1d;
   --panel: rgba(255, 255, 255, 0.88);
   --panel-strong: #ffffff;
@@ -24,9 +24,8 @@ body {
   color: var(--foreground);
   font-family: var(--font-sans), sans-serif;
   background-image:
-    radial-gradient(circle at top left, rgba(185, 11, 8, 0.08), transparent 24%),
-    radial-gradient(circle at bottom right, rgba(185, 11, 8, 0.12), transparent 18%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.92) 0%, rgba(249, 245, 244, 0.96) 100%);
+    radial-gradient(circle at top left, rgba(185, 11, 8, 0.05), transparent 12%),
+    radial-gradient(circle at bottom right, rgba(185, 11, 8, 0.06), transparent 10%);
   background-repeat: no-repeat;
   background-attachment: fixed;
   background-size: cover;
