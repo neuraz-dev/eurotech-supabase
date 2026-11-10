@@ -1,4 +1,5 @@
-import { invokeMonitor, withMonitorAuth } from '@/lib/monitoring/server'
-export const POST = withMonitorAuth(async () =>
-  invokeMonitor('ml-sync-competitor'),
-)
+import { NextResponse } from 'next/server'
+import { withMonitorAuth } from '@/lib/monitoring/server'
+import { startSync } from '@/lib/manual-sync-server'
+// Manual endpoints enqueue durable work. Scheduled Edge calls keep their existing contracts.
+export const POST=withMonitorAuth(async()=>NextResponse.json(await startSync('rivals','sync-competitors'),{status:202}))

@@ -1,3 +1,4 @@
+import { identityOf, syncFailure, type SyncReporting } from './sync-report.ts'
 import type { SupabaseClient } from 'npm:@supabase/supabase-js@2'
 import { allRows } from './monitor-service.ts'
 import { fetchFx, type MlContext } from './ml-observation.ts'
@@ -6,17 +7,22 @@ import { observe, positive, type PriceObservation } from './monitoring.ts'
 export async function syncCatalog(
   client: SupabaseClient,
   context: Omit<MlContext, 'fx'> & { fxUrl?: string },
+  reporting: SyncReporting = {},
 ) {
-  const products = await allRows<{
+  const allProducts = await allRows<{
     id: string
     catalog_product_id: string | null
     catalog_listing: boolean | null
     site_id: string | null
+    title: string | null
+    sku: string | null
+    permalink: string | null
   }>(
     client,
     'ml_products',
-    'id,catalog_product_id,catalog_listing,site_id',
+    'id,catalog_product_id,catalog_listing,site_id,title,sku,permalink',
   )
+  const products = reporting.ids ? allProducts.filter(p => reporting.ids!.includes(p.id)) : allProducts
   const fx = await fetchFx(context.fetcher, context.fxUrl),
     fetcher = context.fetcher ?? fetch,
     api = context.apiUrl ?? 'https://api.mercadolibre.com'
@@ -37,7 +43,7 @@ export async function syncCatalog(
           `${api}/products/${catalogId}/items?status=active&limit=20`,
           { headers: { Authorization: `Bearer ${context.token}` }, signal: AbortSignal.timeout(20_000) },
         )
-        if (!response.ok) throw new Error(`Catálogo HTTP ${response.status}`)
+        if (!response.ok) throw Object.assign(new Error(`Catálogo HTTP ${response.status}`), { status: response.status, resource: `/products/${catalogId}/items` })
         const data = await response.json()
         if (!Array.isArray(data.results)) throw new Error('Respuesta de catálogo inválida')
         return { ...data, observedAt: new Date().toISOString() }
@@ -50,7 +56,11 @@ export async function syncCatalog(
     // A User Product groups the seller's own listings; it is not evidence that
     // the publication belongs to a competitive catalog.
     const catalogId = product.catalog_product_id
-    if (!catalogId) { skipped++; return }
+    if (!catalogId) {
+      skipped++
+      reporting.report?.({ entity_id: product.id, identity: identityOf(product), outcome: 'skipped', category: 'not_applicable', message: 'La publicación no tiene catálogo asociado.', operation: 'catálogo' })
+      return
+    }
     try {
       const headers = { Authorization: `Bearer ${context.token}` },
         data = await loadOffers(catalogId),
@@ -84,6 +94,9 @@ export async function syncCatalog(
               : 'complete',
         state: candidates.length ? 'observed' : 'no_external_offers',
       }
+      const warnings: string[] = []
+      if (candidates.some(c => c.observation.amount != null && c.observation.normalizedAmount == null)) warnings.push('Hay ofertas sin conversión válida a UYU.')
+      if (minimum.coverage !== 'complete') warnings.push('La cobertura de ofertas es parcial o desconocida.')
       let competition: Record<string, unknown> = {
         state: 'not_verified',
         itemId: product.id,
@@ -121,6 +134,7 @@ export async function syncCatalog(
           /* unavailable evidence is never a loss or victory */
         }
       }
+      if (product.catalog_listing && competition.state === 'not_verified') warnings.push('No se pudo verificar la adjudicación del catálogo.')
       const { error } = await client
         .schema('ml')
         .from('ml_products')
@@ -140,9 +154,11 @@ export async function syncCatalog(
         .single()
       if (error) throw new Error(error.message)
       updated++
+      reporting.report?.({ entity_id: product.id, identity: identityOf(product), outcome: warnings.length ? 'warning' : 'updated', message: warnings.join(' ') || 'Precio de catálogo guardado.', operation: 'catálogo', resource: `/products/${catalogId}/items` })
     } catch (error) {
       failed++
-      if (errors.length < 20) errors.push({
+      reporting.report?.({ entity_id: product.id, identity: identityOf(product), outcome: 'failed', ...syncFailure(error, 'catálogo') })
+      errors.push({
         itemId: product.id, catalogId,
         message: error instanceof Error ? error.message : 'Error de consulta',
       })
@@ -159,4 +175,28 @@ export async function syncCatalog(
     errors,
     success: failed === 0,
   }
+}
+
+// Preserve the category-name refresh previously performed by /api/sync-catalog.
+// It is auxiliary: a category failure must not stop publication price refreshes.
+export async function syncCategoryNames(client: SupabaseClient,
+  categoryIds: string[], context: Pick<MlContext,'token'|'apiUrl'|'fetcher'>,
+) {
+  const warnings: import('./sync-report.ts').SyncResult[] = []
+  const fetcher=context.fetcher??fetch
+  for(let offset=0;offset<categoryIds.length;offset+=4){
+    await Promise.all(categoryIds.slice(offset,offset+4).map(async id=>{
+      try{
+        const resource=`/categories/${encodeURIComponent(id)}`
+        const response=await fetcher(`${context.apiUrl??'https://api.mercadolibre.com'}${resource}`,{headers:{Authorization:`Bearer ${context.token}`},signal:AbortSignal.timeout(15_000)})
+        if(!response.ok)throw Object.assign(new Error(`Categoría HTTP ${response.status}`),{status:response.status,resource})
+        const value=await response.json()
+        if(typeof value.name!=='string')throw new Error('La categoría no devolvió un nombre válido')
+        const path=(value.path_from_root??[]).map((node:{name:string})=>node.name).filter((name:string)=>!['Uruguay','Accesorios para Vehículos','Herramientas'].includes(name))
+        const saved=await client.schema('ml').from('ml_categories').upsert({id,name:value.name,full_path:path.join(' › ')||value.name}).select('id').single()
+        if(saved.error||saved.data?.id!==id)throw new Error('No se pudo guardar el nombre de la categoría')
+      }catch(error){warnings.push({entity_id:`$stage:category:${id}`,identity:{id:`$stage:category:${id}`,title:`Nombre de categoría ${id}`},outcome:'warning',...syncFailure(error,'categorías')})}
+    }))
+  }
+  return warnings
 }

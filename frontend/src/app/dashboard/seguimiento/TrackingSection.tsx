@@ -1,5 +1,6 @@
 'use client'
 
+import ManualSyncControl from '@/components/ManualSyncControl'
 import { useState, useEffect } from 'react'
 import Image from 'next/image'
 import { skuKey } from '@/lib/sku'
@@ -660,35 +661,17 @@ export default function TrackingSection({
   const [showAdd, setShowAdd] = useState(false)
   const [resolveItem, setResolveItem] = useState<TrackedItem | null>(null)
   const [selected, setSelected] = useState<TrackedItem | null>(null)
-  const [syncing, setSyncing] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
   const [undoItem, setUndoItem] = useState<TrackedItem | null>(null)
   const [pendingId, setPendingId] = useState<string | null>(null)
-  const [syncMsg, setSyncMsg] = useState<string | null>(null)
 
   const skuMap = new Map(skus.map((s) => [skuKey(s.sku), s.title]))
 
-  async function handleSync() {
-    setSyncing(true)
-    setSyncMsg(null)
-    try {
-      const res = await fetch('/api/sync-tracked', { method: 'POST' })
-      const data = await res.json()
-      if (!res.ok || !data.success) throw new Error(data.error ?? 'Error')
-      setSyncMsg(`${data.snapshots_stored} cambios detectados`)
-    } catch (e) {
-      setSyncMsg(e instanceof Error ? e.message : 'Error')
-    } finally {
-      // Always refresh items from DB after sync (success or partial)
-      try {
-        const fresh = await fetch('/api/tracked-items').then((r) => r.json())
-        if (Array.isArray(fresh)) setItems(fresh)
-      } catch {
-        /* keep existing state */
-      }
-      setSyncing(false)
-      setTimeout(() => setSyncMsg(null), 4000)
-    }
+  async function refreshAfterSync() {
+    const response=await fetch('/api/tracked-items',{cache:'no-store'})
+    const fresh=await response.json()
+    if(!response.ok||!Array.isArray(fresh))throw new Error('No se pudo refrescar Seguimiento. Recargá la página.')
+    setItems(fresh)
   }
 
   async function handleDelete(id: string) {
@@ -765,27 +748,7 @@ export default function TrackingSection({
         >
           <span className="text-base leading-none">+</span> Agregar
         </button>
-        <button
-          onClick={handleSync}
-          disabled={syncing}
-          className="flex items-center gap-1.5 px-3 py-1.5 border border-gray-200 bg-white text-gray-600 text-sm font-medium rounded-lg hover:bg-gray-50 disabled:opacity-50 transition-colors"
-        >
-          <svg
-            className={`w-4 h-4 ${syncing ? 'animate-spin' : ''}`}
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
-            />
-          </svg>
-          {syncing ? 'Sincronizando...' : 'Sincronizar'}
-        </button>
-        {syncMsg && <span className="text-sm text-gray-500">{syncMsg}</span>}
+        <ManualSyncControl action="tracked" origin="seguimiento" label="Sincronizar" onComplete={refreshAfterSync}/>
         <span className="ml-auto text-sm text-gray-400">
           {items.length} productos
         </span>

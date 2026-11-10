@@ -395,3 +395,6 @@ s3_secret_key = "env(S3_SECRET_KEY)"
 
 [functions.ml-scrape-tracked]
 verify_jwt = false
+
+[functions.ml-manual-sync]
+verify_jwt = false

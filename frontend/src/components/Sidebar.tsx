@@ -86,7 +86,7 @@ export default function Sidebar({ user }: { user: User }) {
           </div>
         </div>
 
-        <div className="rounded-[1.4rem] border border-[rgba(185,11,8,0.10)] bg-[rgba(255,255,255,0.78)] px-3 py-3 shadow-[0_10px_26px_rgba(185,11,8,0.05)] lg:flex-1 lg:min-h-0 lg:bg-transparent lg:px-0 lg:py-0 lg:shadow-none">
+        <div className="rounded-[1.4rem] border border-[rgba(185,11,8,0.10)] bg-[rgba(255,255,255,0.78)] px-3 py-3 shadow-[0_10px_26px_rgba(185,11,8,0.05)] lg:flex lg:flex-col lg:flex-1 lg:min-h-0 lg:bg-transparent lg:px-0 lg:py-0 lg:shadow-none">
           <div className="mb-3 flex items-center justify-between px-1 lg:px-3">
             <div>
               <p className="text-[10px] uppercase tracking-[0.28em] text-[rgba(185,11,8,0.62)]">Navegación</p>
@@ -94,7 +94,7 @@ export default function Sidebar({ user }: { user: User }) {
             </div>
           </div>
 
-          <nav className="flex gap-2 overflow-x-auto pb-1 lg:flex lg:flex-col lg:gap-1.5 lg:overflow-y-auto lg:overflow-x-hidden lg:pb-0 lg:pr-1">
+          <nav className="flex gap-2 overflow-x-auto pb-1 lg:flex lg:flex-col lg:flex-1 lg:min-h-0 lg:gap-1.5 lg:overflow-y-auto lg:overflow-x-hidden lg:pb-0 lg:pr-1">
             {navItems.map(({ href, label, icon }) => {
               const Icon = iconMap[icon]
               const isActive = href === '/dashboard' ? pathname === href : pathname.startsWith(href)

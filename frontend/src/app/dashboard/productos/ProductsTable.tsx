@@ -1,5 +1,6 @@
 'use client'
 
+import ManualSyncControl from '@/components/ManualSyncControl'
 import {
   Fragment,
   startTransition,
@@ -682,8 +683,6 @@ export default function ProductsTable({
   const [panelTab, setPanelTab] = useState<'competitors' | 'details'>(
     'competitors',
   )
-  const [syncingProduct, setSyncingProduct] = useState(false)
-  const [syncProductMsg, setSyncProductMsg] = useState<string | null>(null)
   const [currentPage, setCurrentPage] = useState(0)
   const [rivalSuggestions, setRivalSuggestions] = useState<
     Record<string, RivalSuggestion[]>
@@ -809,12 +808,8 @@ export default function ProductsTable({
   }
 
   async function handleSyncProduct(productId: string) {
-    setSyncingProduct(true)
-    setSyncProductMsg(null)
     try {
-      const res = await fetch(`/api/sync-product?id=${productId}`, {
-        method: 'POST',
-      })
+      const res = await fetch(`/api/sync-product?id=${productId}`, {cache:'no-store'})
       const data = await res.json()
       if (!res.ok) throw new Error(data.error ?? 'Error')
       // Update selected product in state with fresh prices
@@ -837,12 +832,8 @@ export default function ProductsTable({
           }
         })
       }
-      setSyncProductMsg('Actualizado')
     } catch (e) {
-      setSyncProductMsg(e instanceof Error ? e.message : 'Error')
-    } finally {
-      setSyncingProduct(false)
-      setTimeout(() => setSyncProductMsg(null), 3000)
+      throw new Error(e instanceof Error ? e.message : 'No se pudo refrescar la publicación')
     }
   }
 
@@ -1966,13 +1957,6 @@ export default function ProductsTable({
                     {selected.title}
                   </h2>
                   <div className="flex items-center gap-2 shrink-0">
-                    {syncProductMsg && (
-                      <span
-                        className={`text-xs font-medium ${syncProductMsg === 'Actualizado' ? 'text-green-600' : 'text-red-500'}`}
-                      >
-                        {syncProductMsg}
-                      </span>
-                    )}
                     {selected && (
                       <StarButton
                         active={selectedIsFavorite}
@@ -1982,26 +1966,7 @@ export default function ProductsTable({
                         }}
                       />
                     )}
-                    <button
-                      onClick={() => handleSyncProduct(selected.id)}
-                      disabled={syncingProduct}
-                      title="Sincronizar precios"
-                      className="text-gray-400 hover:text-blue-600 disabled:opacity-40 transition-colors p-1"
-                    >
-                      <svg
-                        className={`w-4 h-4 ${syncingProduct ? 'animate-spin' : ''}`}
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
-                      >
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          strokeWidth={2}
-                          d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
-                        />
-                      </svg>
-                    </button>
+                    <ManualSyncControl key={selected.id} action="product" targetId={selected.id} origin="panel-producto" label="Actualizar esta publicación" compact onComplete={()=>handleSyncProduct(selected.id)}/>
                     <button
                       onClick={() => setSelected(null)}
                       className="text-gray-400 hover:text-gray-700 text-2xl leading-none"

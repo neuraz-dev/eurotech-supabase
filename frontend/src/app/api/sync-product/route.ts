@@ -1,45 +1,12 @@
+import { startSync } from '@/lib/manual-sync-server'
 import { withMonitorAuth } from '@/lib/monitoring/server'
 import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 
-// POST /api/sync-product?id=MLU640834497
-//
-// A single-product refresh must use the same ML Edge Function as the scheduled
-// sync. That function reads /items/{id}/prices, which is the authoritative
-// source for a current promotion and clears promotions that no longer apply.
-async function POSTImpl(req: NextRequest) {
+// POST enqueues the authoritative prices refresh; GET reads confirmed persisted values.
+async function GETImpl(req: NextRequest) {
   const id = req.nextUrl.searchParams.get('id')
   if (!id) return NextResponse.json({ error: 'Missing id' }, { status: 400 })
-
-  const key = process.env.SUPABASE_SECRET_KEY
-  if (!key)
-    return NextResponse.json(
-      { error: 'missing SUPABASE_SECRET_KEY' },
-      { status: 500 },
-    )
-
-  const syncResponse = await fetch(
-    `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/ml-sync`,
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        apikey: key,
-        'x-sync-secret': key,
-        ...(key.startsWith('eyJ') ? { Authorization: `Bearer ${key}` } : {}),
-      },
-      body: JSON.stringify({ ids: [id] }),
-      cache: 'no-store',
-    },
-  )
-
-  if (!syncResponse.ok) {
-    const body = await syncResponse.text()
-    return NextResponse.json(
-      { error: `ML sync failed (${syncResponse.status}): ${body}` },
-      { status: 502 },
-    )
-  }
 
   const { data, error } = await createAdminClient()
     .schema('ml')
@@ -64,4 +31,5 @@ async function POSTImpl(req: NextRequest) {
   })
 }
 
-export const POST = withMonitorAuth(POSTImpl)
+export const GET = withMonitorAuth(GETImpl)
+export const POST = withMonitorAuth(async(req:NextRequest)=>NextResponse.json(await startSync('product','sync-product',req.nextUrl.searchParams.get('id')),{status:202}))

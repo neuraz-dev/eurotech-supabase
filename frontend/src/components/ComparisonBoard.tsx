@@ -1,4 +1,5 @@
 'use client'
+import ManualSyncControl from '@/components/ManualSyncControl'
 import { useState } from 'react'
 import {
   compare,
@@ -157,32 +158,6 @@ export default function ComparisonBoard({
       setPending(null)
     }
   }
-  async function refreshRivals() {
-    setPending('refresh')
-    setError(null)
-    setMessage(null)
-    try {
-      const response = await fetch('/api/sync-competitors', { method: 'POST' }),
-        data = await response.json()
-      await onChanged?.()
-      if (!response.ok || !data.success)
-        throw new Error(
-          data.error ??
-            'Consulta parcial: revisá los rivales con error y reintentá.',
-        )
-      setMessage(
-        'Rivales consultados. Si la referencia propia está desactualizada, actualizá esta publicación desde su cabecera.',
-      )
-    } catch (error) {
-      setError(
-        error instanceof Error
-          ? error.message
-          : 'No se pudo consultar. Reintentá.',
-      )
-    } finally {
-      setPending(null)
-    }
-  }
   return (
     <section aria-label="Comparación de precios" className="space-y-3">
       {product.sku?.trim()==='7270'&&onChanged&&<SourceRecoveryPanel sku="7270" onChanged={onChanged}/>}
@@ -241,13 +216,7 @@ export default function ComparisonBoard({
           </div>
         )}
         {onChanged && (
-          <button
-            disabled={!!pending}
-            onClick={refreshRivals}
-            className="mt-2 text-xs font-semibold text-blue-700 underline"
-          >
-            Actualizar todos los rivales y conversión
-          </button>
+          <ManualSyncControl action="rivals" origin="panel-precios" label="Actualizar todos los rivales y conversión" onComplete={async()=>{await onChanged?.()}}/>
         )}
       </div>
       {!onChanged && (

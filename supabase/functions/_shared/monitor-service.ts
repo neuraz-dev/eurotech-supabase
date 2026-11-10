@@ -1,3 +1,4 @@
+import { identityOf, syncFailure, type SyncReporting } from './sync-report.ts'
 import type { SupabaseClient } from 'npm:@supabase/supabase-js@2'
 import { buildAlertEvents } from './alert-events.ts'
 import { MlHttpError } from './ml-observation.ts'
@@ -68,15 +69,17 @@ type Rule = {
 export async function syncCompetitors(
   client: SupabaseClient,
   context: Omit<MlContext, 'fx'> & { fxUrl?: string },
+  reporting: SyncReporting = {},
 ) {
-  const recovery=await recoverPendingFixedTargets(client,{...context,fx:null})
-  const [rivals, links, products, rules, fx] = await Promise.all([
+  const recovery=reporting.ids ? {} : await recoverPendingFixedTargets(client,{...context,fx:null})
+  const [allRivals, links, products, rules, fx] = await Promise.all([
     allRows<RivalRecord>(client, 'ml_competitor_items'),
     allRows<CompetitorLink>(client, 'ml_competitor_links'),
     allRows<OwnProduct>(client, 'ml_products'),
     allRows<Rule>(client, 'ml_price_alert_rules'),
     fetchFx(context.fetcher, context.fxUrl),
   ])
+  const rivals = reporting.ids ? allRivals.filter(r => reporting.ids!.includes(r.id)) : allRivals
   const stats = {
     items_processed: rivals.length,
     items_updated: 0,
@@ -93,6 +96,7 @@ export async function syncCompetitors(
         )
         if (!associations.length) {
           stats.items_skipped++
+          reporting.report?.({entity_id:rival.id,identity:identityOf(rival),outcome:'skipped',category:'not_applicable',message:'El rival no tiene asociaciones vigentes.',operation:'rivales'})
           return
         }
         const attemptedAt = new Date().toISOString()
@@ -104,12 +108,15 @@ export async function syncCompetitors(
           const availability = value.status !== 'active' || value.available_quantity === 0
             || value.observation.state === 'no_external_offers'
             || !(Number(value.observation.amount) > 0) ? 'unavailable' : 'available'
+          let persisted = false
+          let obsolete = false
+          let repairWarning = false
           let baseline = rival
           let committed = false
           for (let attempt = 0; attempt < 3; attempt++) {
             const events = buildAlertEvents(
               { ...value, id:rival.id, target_kind:rival.target_kind, availability },
-              baseline.observation, products, rivals, links, rules, fx,
+              baseline.observation, products, allRivals, links, rules, fx,
             )
             const { data, error } = await client.schema('ml').rpc('record_monitor_observation', {
               p_id:rival.id, p_expected:baseline.observation_revision ?? 0,
@@ -124,10 +131,10 @@ export async function syncCompetitors(
               throw new Error('La base no confirmó la persistencia de la observación y sus eventos')
             }
             if(!data?.conflict){
-              if(!data?.obsolete)stats.items_updated++
+              if(!data?.obsolete){stats.items_updated++;persisted=true}else obsolete=true
               stats.alerts_fired+=Number(data?.alerts ?? 0)
               const repair=await client.schema('ml').rpc('repair_verified_source_archives',{p_rival:rival.id})
-              if(repair.error)throw new Error('Observación guardada; no se pudo completar la revisión de archivos')
+              if(repair.error)repairWarning=true
               committed=true;break
             }
             const latest=await client.schema('ml').from('ml_competitor_items').select('*').eq('id',rival.id).single()
@@ -135,8 +142,16 @@ export async function syncCompetitors(
             baseline=latest.data as RivalRecord
           }
           if(!committed)throw new Error('Observación concurrente; reintentar la sincronización')
+          const conversionMissing = value.observation.amount != null && value.observation.normalizedAmount == null
+          reporting.report?.({entity_id:rival.id,identity:{...identityOf(rival),title:value.title ?? rival.title,seller:value.observation.sellerName ?? rival.seller_name,itemId:value.observation.itemId,url:value.permalink},outcome:obsolete?'skipped':conversionMissing||repairWarning?'warning':'updated',message:repairWarning?'Observación guardada; no se pudo completar la revisión de archivos.':obsolete?'Otra consulta más reciente ya está guardada.':conversionMissing?'Observación guardada; no hay conversión válida para comparar.':persisted?'Observación y eventos guardados.':'Consulta completada.',operation:'rivales'})
         } catch (error) {
           stats.items_failed++
+          const failure = syncFailure(error,'rivales')
+          const unresolvedMissing = error instanceof MlHttpError && [404,410].includes(error.status)
+            && !isConfirmedSource404(error,{kind:rival.target_kind,id:rival.id,sourceKind:rival.source_kind,sourceId:rival.source_id},rival.observation)
+          reporting.report?.({entity_id:rival.id,identity:identityOf(rival),outcome:'failed',...failure,
+            ...(unresolvedMissing?{category:'resolution',message:`${failure.message}. La identidad del recurso no está validada; no se confirmó indisponibilidad.`}:{}),
+          })
           const { error: writeError } = await client
             .schema('ml')
             .from('ml_competitor_items')
@@ -224,16 +239,19 @@ export async function enrichTracked(client: SupabaseClient, id?: string) {
 export async function syncTracked(
   client: SupabaseClient,
   context: Omit<MlContext, 'fx'> & { fxUrl?: string },
+  reporting: SyncReporting = {},
 ) {
-  const [items, fx] = await Promise.all([
+  const [allItems, fx] = await Promise.all([
     enrichTracked(client),
     fetchFx(context.fetcher, context.fxUrl),
   ])
+  const items = reporting.ids ? allItems.filter(i => reporting.ids!.includes(i.id)) : allItems
   let stored = 0,
     failed = 0
   for (const item of items) {
     if (item.target_review_required) {
       failed++
+      reporting.report?.({entity_id:item.id,identity:identityOf(item),outcome:'failed',category:'resolution',message:'La identidad del seguimiento requiere resolución.',operation:'seguimiento'})
       continue
     }
     const attemptedAt = new Date().toISOString()
@@ -285,9 +303,11 @@ export async function syncTracked(
         .eq('id', item.id)
         .select('id')
         .single()
-      if (error) throw new Error(error.message)
+      if (error) throw new Error(`No se pudo guardar el seguimiento: ${error.message}`)
+      reporting.report?.({entity_id:item.id,identity:{...identityOf(item),title:value.title ?? item.title,seller:value.observation.sellerName,itemId:value.observation.itemId,url:value.permalink},outcome:value.observation.amount != null && value.observation.normalizedAmount == null?'warning':'updated',message:value.observation.amount != null && value.observation.normalizedAmount == null?'Consulta guardada sin conversión válida.':changed?'Consulta y cambio guardados.':'Consulta guardada; sin cambios.',operation:'seguimiento'})
     } catch (error) {
       failed++
+      reporting.report?.({entity_id:item.id,identity:identityOf(item),outcome:'failed',...syncFailure(error,'seguimiento')})
       await client
         .schema('ml')
         .from('ml_tracked_items')

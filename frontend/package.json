@@ -14,7 +14,8 @@
     "test:sources": "node --experimental-strip-types tests/source-resolution.test.ts",
     "test:integration": "node --experimental-strip-types tests/monitor-integration.test.ts",
     "test:e2e": "playwright test",
-    "test:events-ui": "playwright test --config playwright.events.config.ts"
+    "test:events-ui": "playwright test --config playwright.events.config.ts",
+    "test:manual-sync": "node --experimental-strip-types --test tests/manual-sync.test.ts tests/monitor-sync-flow.test.ts"
   },
   "dependencies": {
     "@supabase/ssr": "^0.10.0",
