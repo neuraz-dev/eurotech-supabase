@@ -1,16 +1,21 @@
+import { withMonitorAuth } from '@/lib/monitoring/server'
 import { NextResponse } from 'next/server'
 
 // Invokes the ml-sync edge function (which pulls the seller's own items from ML).
 // The UI calls this as fire-and-forget because ml-sync can take 1-2 minutes
 // with the /items/{id}/prices calls enabled.
 async function sleep(ms: number) {
-  return new Promise(resolve => setTimeout(resolve, ms))
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-export async function POST() {
+async function POSTImpl() {
   const url = `${process.env.NEXT_PUBLIC_SUPABASE_URL}/functions/v1/ml-sync`
   const key = process.env.SUPABASE_SECRET_KEY
-  if (!key) return NextResponse.json({ error: 'missing SUPABASE_SECRET_KEY' }, { status: 500 })
+  if (!key)
+    return NextResponse.json(
+      { error: 'missing SUPABASE_SECRET_KEY' },
+      { status: 500 },
+    )
 
   try {
     const headers = {
@@ -34,17 +39,28 @@ export async function POST() {
         })
         const text = await res.text()
         let body: unknown
-        try { body = JSON.parse(text) } catch { body = text }
+        try {
+          body = JSON.parse(text)
+        } catch {
+          body = text
+        }
 
         if (res.ok) {
-          return NextResponse.json({ status: res.status, body }, { status: 200 })
+          return NextResponse.json(
+            { status: res.status, body },
+            { status: 200 },
+          )
         }
 
         lastStatus = res.status
         lastBody = body
-        lastError = typeof body === 'object' && body && 'error' in body
-          ? String((body as { error?: unknown }).error ?? `sync-own failed with status ${res.status}`)
-          : `sync-own failed with status ${res.status}`
+        lastError =
+          typeof body === 'object' && body && 'error' in body
+            ? String(
+                (body as { error?: unknown }).error ??
+                  `sync-own failed with status ${res.status}`,
+              )
+            : `sync-own failed with status ${res.status}`
       } catch (err) {
         lastError = err instanceof Error ? err.message : String(err)
       }
@@ -55,7 +71,11 @@ export async function POST() {
     }
 
     return NextResponse.json(
-      { error: lastError ?? 'Error sincronizando propios', status: lastStatus, body: lastBody },
+      {
+        error: lastError ?? 'Error sincronizando propios',
+        status: lastStatus,
+        body: lastBody,
+      },
       { status: 502 },
     )
   } catch (err) {
@@ -65,3 +85,5 @@ export async function POST() {
     )
   }
 }
+
+export const POST = withMonitorAuth(POSTImpl)

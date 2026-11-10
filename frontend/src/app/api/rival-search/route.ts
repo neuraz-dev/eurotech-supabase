@@ -1,3 +1,4 @@
+import { withMonitorAuth } from '@/lib/monitoring/server'
 import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
 
@@ -102,16 +103,20 @@ function uniqueValues(values: string[]) {
 }
 
 function extractMeaningfulTokens(value: string) {
-  const tokens = normalizeSearchText(value).match(/[a-z0-9]+(?:\/[0-9]+)?/g) ?? []
-  return uniqueValues(tokens.filter((token) => {
-    if (token.length <= 1) return false
-    if (GENERIC_MATCH_TOKENS.has(token)) return false
-    return true
-  }))
+  const tokens =
+    normalizeSearchText(value).match(/[a-z0-9]+(?:\/[0-9]+)?/g) ?? []
+  return uniqueValues(
+    tokens.filter((token) => {
+      if (token.length <= 1) return false
+      if (GENERIC_MATCH_TOKENS.has(token)) return false
+      return true
+    }),
+  )
 }
 
 function extractSpecs(value: string) {
-  const specs = normalizeSearchText(value).match(/\bm?\d+(?:[.,]\d+)?(?:\/\d+)?\b/g) ?? []
+  const specs =
+    normalizeSearchText(value).match(/\bm?\d+(?:[.,]\d+)?(?:\/\d+)?\b/g) ?? []
   return uniqueValues(specs.map((spec) => spec.replace(',', '.')))
 }
 
@@ -120,7 +125,11 @@ function getSharedValues(left: string[], right: string[]) {
   return left.filter((value) => rightSet.has(value))
 }
 
-function isExactCompetitorCandidate(productTitle: string, productDescription: string, candidate: RivalCandidate) {
+function isExactCompetitorCandidate(
+  productTitle: string,
+  productDescription: string,
+  candidate: RivalCandidate,
+) {
   if (candidate.confidence < MIN_RIVAL_CONFIDENCE) return false
 
   const productText = `${productTitle} ${productDescription}`
@@ -172,8 +181,13 @@ function descriptionsToText(descriptions: unknown): string | null {
     const text = descriptions
       .map((item) => {
         if (!item || typeof item !== 'object') return null
-        const maybeText = item as { plain_text?: unknown; text?: unknown; id?: unknown }
-        if (typeof maybeText.plain_text === 'string') return maybeText.plain_text
+        const maybeText = item as {
+          plain_text?: unknown
+          text?: unknown
+          id?: unknown
+        }
+        if (typeof maybeText.plain_text === 'string')
+          return maybeText.plain_text
         if (typeof maybeText.text === 'string') return maybeText.text
         if (typeof maybeText.id === 'string') return maybeText.id
         return null
@@ -185,7 +199,8 @@ function descriptionsToText(descriptions: unknown): string | null {
 
   if (typeof descriptions === 'object') {
     const maybeText = descriptions as { plain_text?: unknown; text?: unknown }
-    if (typeof maybeText.plain_text === 'string') return compactText(maybeText.plain_text)
+    if (typeof maybeText.plain_text === 'string')
+      return compactText(maybeText.plain_text)
     if (typeof maybeText.text === 'string') return compactText(maybeText.text)
   }
 
@@ -193,7 +208,9 @@ function descriptionsToText(descriptions: unknown): string | null {
 }
 
 async function fetchMlDescription(itemId: string, accessToken?: string | null) {
-  const headers = accessToken ? { Authorization: `Bearer ${accessToken}` } : undefined
+  const headers = accessToken
+    ? { Authorization: `Bearer ${accessToken}` }
+    : undefined
 
   async function request(withAuth: boolean) {
     const res = await fetch(`${ML_API}/items/${itemId}/description`, {
@@ -202,18 +219,22 @@ async function fetchMlDescription(itemId: string, accessToken?: string | null) {
     })
     if (!res.ok) return null
     const data = await res.json()
-    const text = typeof data.plain_text === 'string'
-      ? data.plain_text
-      : typeof data.text === 'string'
-        ? data.text
-        : null
+    const text =
+      typeof data.plain_text === 'string'
+        ? data.plain_text
+        : typeof data.text === 'string'
+          ? data.text
+          : null
     return text ? compactText(text).slice(0, 3500) : null
   }
 
-  return (accessToken ? await request(true) : null) ?? await request(false)
+  return (accessToken ? await request(true) : null) ?? (await request(false))
 }
 
-function parseMlInput(input: string): { catalogId: string | null; itemId: string | null } {
+function parseMlInput(input: string): {
+  catalogId: string | null
+  itemId: string | null
+} {
   const trimmed = input.trim()
   let catalogId: string | null = null
   let itemId: string | null = null
@@ -246,7 +267,10 @@ function parseMlInput(input: string): { catalogId: string | null; itemId: string
   return { catalogId, itemId }
 }
 
-async function fetchSellerName(sellerId: number, accessToken: string): Promise<string | null> {
+async function fetchSellerName(
+  sellerId: number,
+  accessToken: string,
+): Promise<string | null> {
   try {
     const res = await fetch(`${ML_API}/users/${sellerId}`, {
       headers: { Authorization: `Bearer ${accessToken}` },
@@ -259,7 +283,10 @@ async function fetchSellerName(sellerId: number, accessToken: string): Promise<s
   }
 }
 
-async function resolveMlItem(itemId: string, accessToken: string): Promise<MlResolvedProduct | null> {
+async function resolveMlItem(
+  itemId: string,
+  accessToken: string,
+): Promise<MlResolvedProduct | null> {
   try {
     const res = await fetch(`${ML_API}/items/${itemId}`, {
       headers: { Authorization: `Bearer ${accessToken}` },
@@ -269,12 +296,15 @@ async function resolveMlItem(itemId: string, accessToken: string): Promise<MlRes
     if (!data || typeof data !== 'object' || !data.id) return null
 
     const sellerId = typeof data.seller_id === 'number' ? data.seller_id : null
-    const sellerName = sellerId ? await fetchSellerName(sellerId, accessToken) : null
+    const sellerName = sellerId
+      ? await fetchSellerName(sellerId, accessToken)
+      : null
     return {
       id: String(data.id),
       title: typeof data.title === 'string' ? data.title : null,
       price: typeof data.price === 'number' ? data.price : null,
-      currency_id: typeof data.currency_id === 'string' ? data.currency_id : null,
+      currency_id:
+        typeof data.currency_id === 'string' ? data.currency_id : null,
       thumbnail: typeof data.thumbnail === 'string' ? data.thumbnail : null,
       permalink: typeof data.permalink === 'string' ? data.permalink : null,
       seller_id: sellerId,
@@ -285,7 +315,11 @@ async function resolveMlItem(itemId: string, accessToken: string): Promise<MlRes
   }
 }
 
-async function resolveMlCatalog(catalogId: string, accessToken: string, ourSellerId: number | null): Promise<MlResolvedProduct | null> {
+async function resolveMlCatalog(
+  catalogId: string,
+  accessToken: string,
+  ourSellerId: number | null,
+): Promise<MlResolvedProduct | null> {
   const headers = { Authorization: `Bearer ${accessToken}` }
   const permalink = /^ML[A-Z]{2,}\d+/i.test(catalogId)
     ? `https://www.mercadolibre.com.uy/up/${catalogId}`
@@ -293,14 +327,19 @@ async function resolveMlCatalog(catalogId: string, accessToken: string, ourSelle
 
   let productData: Record<string, unknown> = {}
   try {
-    const productRes = await fetch(`${ML_API}/products/${catalogId}`, { headers })
+    const productRes = await fetch(`${ML_API}/products/${catalogId}`, {
+      headers,
+    })
     if (productRes.ok) productData = await productRes.json()
   } catch {
     // Keep item-list fallback.
   }
 
   try {
-    const itemsRes = await fetch(`${ML_API}/products/${catalogId}/items?limit=20`, { headers })
+    const itemsRes = await fetch(
+      `${ML_API}/products/${catalogId}/items?limit=20`,
+      { headers },
+    )
     if (!itemsRes.ok) return null
     const itemsData = await itemsRes.json()
     const results: Array<{
@@ -311,19 +350,41 @@ async function resolveMlCatalog(catalogId: string, accessToken: string, ourSelle
     }> = Array.isArray(itemsData.results) ? itemsData.results : []
     if (results.length === 0) return null
 
-    const competitorResults = ourSellerId ? results.filter(r => r.seller_id !== ourSellerId) : results
-    const best = (competitorResults.length > 0 ? competitorResults : results)
-      .reduce((a, b) => (a.price ?? Infinity) <= (b.price ?? Infinity) ? a : b)
-    const pictures = Array.isArray(productData.pictures) ? productData.pictures as Array<{ url?: string; secure_url?: string }> : []
-    const sellerName = best.seller_id ? await fetchSellerName(best.seller_id, accessToken) : null
-    const itemFallback = best.item_id ? await resolveMlItem(best.item_id, accessToken) : null
+    const competitorResults = ourSellerId
+      ? results.filter((r) => r.seller_id !== ourSellerId)
+      : results
+    const best = (
+      competitorResults.length > 0 ? competitorResults : results
+    ).reduce((a, b) => ((a.price ?? Infinity) <= (b.price ?? Infinity) ? a : b))
+    const pictures = Array.isArray(productData.pictures)
+      ? (productData.pictures as Array<{ url?: string; secure_url?: string }>)
+      : []
+    const sellerName = best.seller_id
+      ? await fetchSellerName(best.seller_id, accessToken)
+      : null
+    const itemFallback = best.item_id
+      ? await resolveMlItem(best.item_id, accessToken)
+      : null
 
     return {
       id: catalogId,
-      title: (typeof productData.name === 'string' ? productData.name : null) ?? itemFallback?.title ?? null,
-      price: (typeof best.price === 'number' ? best.price : null) ?? itemFallback?.price ?? null,
-      currency_id: (typeof best.currency_id === 'string' ? best.currency_id : null) ?? itemFallback?.currency_id ?? null,
-      thumbnail: pictures[0]?.secure_url ?? pictures[0]?.url ?? itemFallback?.thumbnail ?? null,
+      title:
+        (typeof productData.name === 'string' ? productData.name : null) ??
+        itemFallback?.title ??
+        null,
+      price:
+        (typeof best.price === 'number' ? best.price : null) ??
+        itemFallback?.price ??
+        null,
+      currency_id:
+        (typeof best.currency_id === 'string' ? best.currency_id : null) ??
+        itemFallback?.currency_id ??
+        null,
+      thumbnail:
+        pictures[0]?.secure_url ??
+        pictures[0]?.url ??
+        itemFallback?.thumbnail ??
+        null,
       permalink,
       seller_id: typeof best.seller_id === 'number' ? best.seller_id : null,
       seller_name: sellerName ?? itemFallback?.seller_name ?? null,
@@ -340,77 +401,102 @@ async function enrichCandidates(
 ) {
   if (!accessToken || candidates.length === 0) return candidates
 
-  return await Promise.all(candidates.map(async (candidate) => {
-    const parsed = parseMlInput(candidate.url || candidate.item_id || '')
-    const resolved = parsed.catalogId
-      ? await resolveMlCatalog(parsed.catalogId, accessToken, ourSellerId)
-      : parsed.itemId
-        ? await resolveMlItem(parsed.itemId, accessToken)
-        : null
+  return await Promise.all(
+    candidates.map(async (candidate) => {
+      const parsed = parseMlInput(candidate.url || candidate.item_id || '')
+      const resolved = parsed.catalogId
+        ? await resolveMlCatalog(parsed.catalogId, accessToken, ourSellerId)
+        : parsed.itemId
+          ? await resolveMlItem(parsed.itemId, accessToken)
+          : null
 
-    if (!resolved) return candidate
+      if (!resolved) return candidate
 
-    return {
-      ...candidate,
-      title: resolved.title ?? candidate.title,
-      url: resolved.permalink ?? candidate.url,
-      item_id: resolved.id ?? candidate.item_id,
-      seller_name: resolved.seller_name ?? candidate.seller_name,
-      price: resolved.price ?? candidate.price,
-      currency_id: resolved.currency_id ?? candidate.currency_id,
-      thumbnail: resolved.thumbnail ?? candidate.thumbnail,
-    }
-  }))
+      return {
+        ...candidate,
+        title: resolved.title ?? candidate.title,
+        url: resolved.permalink ?? candidate.url,
+        item_id: resolved.id ?? candidate.item_id,
+        seller_name: resolved.seller_name ?? candidate.seller_name,
+        price: resolved.price ?? candidate.price,
+        currency_id: resolved.currency_id ?? candidate.currency_id,
+        thumbnail: resolved.thumbnail ?? candidate.thumbnail,
+      }
+    }),
+  )
 }
 
-export async function POST(req: NextRequest) {
+async function POSTImpl(req: NextRequest) {
   const { productId, limit } = await req.json()
   if (typeof productId !== 'string' || !productId.trim()) {
-    return NextResponse.json({ error: 'productId es requerido' }, { status: 400 })
+    return NextResponse.json(
+      { error: 'productId es requerido' },
+      { status: 400 },
+    )
   }
 
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
   const serviceKey = process.env.SUPABASE_SECRET_KEY
   if (!supabaseUrl || !serviceKey) {
-    return NextResponse.json({ error: 'Faltan variables de Supabase en el servidor' }, { status: 500 })
+    return NextResponse.json(
+      { error: 'Faltan variables de Supabase en el servidor' },
+      { status: 500 },
+    )
   }
 
   const admin = createAdminClient()
   const { data: product, error: productError } = await admin
-    .schema('ml').from('ml_products')
+    .schema('ml')
+    .from('ml_products')
     .select(
       `id, title, subtitle, sku, descriptions, attributes,
-       category_id, domain_id, price, sale_price, catalog_price, currency_id`
+       category_id, domain_id, price, sale_price, catalog_price, currency_id`,
     )
     .eq('id', productId.trim())
     .maybeSingle<ProductRow>()
 
-  if (productError) return NextResponse.json({ error: productError.message }, { status: 500 })
-  if (!product) return NextResponse.json({ error: 'Producto no encontrado' }, { status: 404 })
-  if (!product.title) return NextResponse.json({ error: 'El producto no tiene titulo' }, { status: 400 })
+  if (productError)
+    return NextResponse.json({ error: productError.message }, { status: 500 })
+  if (!product)
+    return NextResponse.json(
+      { error: 'Producto no encontrado' },
+      { status: 404 },
+    )
+  if (!product.title)
+    return NextResponse.json(
+      { error: 'El producto no tiene titulo' },
+      { status: 400 },
+    )
 
   const productTitle = product.title
   const skuKey = product.sku ?? product.id
 
   const [tokenResult, competitorsResult] = await Promise.all([
     admin
-      .schema('ml').from('ml_tokens')
+      .schema('ml')
+      .from('ml_tokens')
       .select('access_token, user_id')
       .order('expires_at', { ascending: false })
       .limit(1)
       .maybeSingle<{ access_token: string; user_id: number }>(),
     admin
-      .schema('ml').from('ml_competitor_items')
+      .schema('ml')
+      .from('ml_competitor_items')
       .select('id, permalink')
       .eq('our_sku', skuKey),
   ])
 
-  const mlDescription = await fetchMlDescription(product.id, tokenResult.data?.access_token)
+  const mlDescription = await fetchMlDescription(
+    product.id,
+    tokenResult.data?.access_token,
+  )
   const localDescription = [
     product.subtitle,
     descriptionsToText(product.descriptions),
     attributesToText(product.attributes),
-  ].filter(Boolean).join(' | ')
+  ]
+    .filter(Boolean)
+    .join(' | ')
 
   const edgeRes = await fetch(`${supabaseUrl}/functions/v1/ml-search-rivals`, {
     method: 'POST',
@@ -429,40 +515,63 @@ export async function POST(req: NextRequest) {
       domainId: product.domain_id,
       price: product.sale_price ?? product.catalog_price ?? product.price,
       currencyId: product.currency_id,
-      existingCompetitorIds: (competitorsResult.data ?? []).map((item) => item.id).filter(Boolean),
-      existingCompetitorUrls: (competitorsResult.data ?? []).map((item) => item.permalink).filter(Boolean),
+      existingCompetitorIds: (competitorsResult.data ?? [])
+        .map((item) => item.id)
+        .filter(Boolean),
+      existingCompetitorUrls: (competitorsResult.data ?? [])
+        .map((item) => item.permalink)
+        .filter(Boolean),
       limit: typeof limit === 'number' ? limit : 5,
     }),
   })
 
   const text = await edgeRes.text()
   let body: unknown
-  try { body = JSON.parse(text) } catch { body = { error: text } }
+  try {
+    body = JSON.parse(text)
+  } catch {
+    body = { error: text }
+  }
 
   if (!edgeRes.ok) {
-    const message = body && typeof body === 'object' && 'error' in body
-      ? String((body as { error: unknown }).error)
-      : body && typeof body === 'object' && 'message' in body
-        ? String((body as { message: unknown }).message)
-        : 'No se pudo buscar rivales'
+    const message =
+      body && typeof body === 'object' && 'error' in body
+        ? String((body as { error: unknown }).error)
+        : body && typeof body === 'object' && 'message' in body
+          ? String((body as { message: unknown }).message)
+          : 'No se pudo buscar rivales'
     return NextResponse.json({ error: message }, { status: 502 })
   }
 
-  if (body && typeof body === 'object' && 'candidates' in body && Array.isArray((body as { candidates: unknown }).candidates)) {
-    const enrichedCandidates = (await enrichCandidates(
-      (body as { candidates: RivalCandidate[] }).candidates,
-      tokenResult.data?.access_token,
-      typeof tokenResult.data?.user_id === 'number' ? tokenResult.data.user_id : null,
-    )).filter((candidate) => isExactCompetitorCandidate(productTitle, localDescription, candidate))
+  if (
+    body &&
+    typeof body === 'object' &&
+    'candidates' in body &&
+    Array.isArray((body as { candidates: unknown }).candidates)
+  ) {
+    const enrichedCandidates = (
+      await enrichCandidates(
+        (body as { candidates: RivalCandidate[] }).candidates,
+        tokenResult.data?.access_token,
+        typeof tokenResult.data?.user_id === 'number'
+          ? tokenResult.data.user_id
+          : null,
+      )
+    ).filter((candidate) =>
+      isExactCompetitorCandidate(productTitle, localDescription, candidate),
+    )
     return NextResponse.json({
       ...body,
       candidates: enrichedCandidates,
-      summary: enrichedCandidates.length > 0
-        ? (body as { summary?: unknown }).summary
-        : 'No se encontraron competidores exactos con suficiente confianza.',
+      summary:
+        enrichedCandidates.length > 0
+          ? (body as { summary?: unknown }).summary
+          : 'No se encontraron competidores exactos con suficiente confianza.',
       cost_estimate_usd: '~0.01-0.03',
     })
   }
 
   return NextResponse.json(body)
 }
+
+export const POST = withMonitorAuth(POSTImpl)

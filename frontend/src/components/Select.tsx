@@ -12,13 +12,14 @@ type Props = {
   'aria-label': string
   id?: string
   disabled?: boolean
+  searchable?: boolean
   variant?: 'filter' | 'form'
   className?: string
 }
 
 const normalize = (text: string) => text.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim()
 
-export default function Select({ options, value, onValueChange, 'aria-label': label, id, disabled = false, variant = 'form', className = '' }: Props) {
+export default function Select({ options, value, onValueChange, 'aria-label': label, id, disabled = false, searchable = options.length > 7, variant = 'form', className = '' }: Props) {
   const generatedId = useId()
   const listId = `${generatedId}-list`
   const trigger = useRef<HTMLButtonElement>(null)
@@ -29,7 +30,6 @@ export default function Select({ options, value, onValueChange, 'aria-label': la
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [activeIndex, setActiveIndex] = useState(-1)
-  const searchable = options.length > 7
   const visibleOptions = useMemo(() => {
     const normalizedQuery = normalize(query)
     return options.filter(option => normalize(option.label).includes(normalizedQuery))

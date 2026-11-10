@@ -1,6 +1,7 @@
 import { createAdminClient } from '@/lib/supabase/admin'
 import TrackingSection from './TrackingSection'
 import { skuKey } from '@/lib/sku'
+import { enrichTracked } from '@monitoring/monitor-service'
 
 export const dynamic = 'force-dynamic'
 
@@ -8,29 +9,29 @@ export default async function SeguimientoPage() {
   const admin = createAdminClient()
 
   const [itemsRes, skusRes] = await Promise.all([
-    admin
-      .schema('ml').from('ml_tracked_items')
-      .select('*')
-      .eq('active', true)
-      .order('created_at', { ascending: false }),
+    enrichTracked(admin),
 
     admin
-      .schema('ml').from('ml_products')
+      .schema('ml')
+      .from('ml_products')
       .select('sku, title, thumbnail, price, catalog_price, currency_id')
       .not('sku', 'is', null)
       .not('status', 'in', '("paused","closed")')
       .order('title'),
   ])
 
-  const items = itemsRes.data ?? []
-  const skuMap = new Map<string, {
-    sku: string
-    title: string
-    thumbnail: string | null
-    price: number | null
-    catalog_price: number | null
-    currency_id: string | null
-  }>()
+  const items = itemsRes
+  const skuMap = new Map<
+    string,
+    {
+      sku: string
+      title: string
+      thumbnail: string | null
+      price: number | null
+      catalog_price: number | null
+      currency_id: string | null
+    }
+  >()
   for (const p of skusRes.data ?? []) {
     const key = skuKey(p.sku as string | null)
     if (!key || skuMap.has(key)) continue
@@ -45,33 +46,6 @@ export default async function SeguimientoPage() {
   }
   const skus = Array.from(skuMap.values())
 
-  // Fetch latest 2 snapshots per item for delta display
-  const ids = items.map(i => i.id)
-  let snapshotRows: Record<string, unknown>[] = []
-  if (ids.length > 0) {
-    const { data } = await admin
-      .schema('ml').from('ml_tracked_snapshots')
-      .select('*')
-      .in('tracked_item_id', ids)
-      .order('scraped_at', { ascending: false })
-    snapshotRows = (data ?? []) as Record<string, unknown>[]
-  }
-
-  const latestMap = new Map<string, Record<string, unknown>>()
-  const prevMap = new Map<string, Record<string, unknown>>()
-  for (const snap of snapshotRows) {
-    const tid = snap.tracked_item_id as string
-    if (!latestMap.has(tid)) { latestMap.set(tid, snap); continue }
-    if (!prevMap.has(tid)) prevMap.set(tid, snap)
-  }
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const enriched = items.map((item: any) => ({
-    ...item,
-    latest_snapshot: latestMap.get(item.id) ?? null,
-    prev_snapshot: prevMap.get(item.id) ?? null,
-  }))
-
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
@@ -82,8 +56,12 @@ export default async function SeguimientoPage() {
           </p>
         </div>
       </div>
-      {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
-      <TrackingSection initialItems={enriched as any} skus={skus} />
+      <TrackingSection
+        initialItems={
+          items as Parameters<typeof TrackingSection>[0]['initialItems']
+        }
+        skus={skus}
+      />
     </div>
   )
 }

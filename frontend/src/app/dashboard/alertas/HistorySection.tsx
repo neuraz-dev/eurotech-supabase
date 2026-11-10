@@ -1,632 +1,153 @@
 'use client'
-
-import { useState, useEffect, type Dispatch, type SetStateAction } from 'react'
+import { useEffect, useState, useSyncExternalStore } from 'react'
 import Image from 'next/image'
 import Select from '@/components/Select'
-import RuleTypeBadge from './RuleTypeBadge'
-import { competitorName, filterPublicationAlerts, removeAlerts, updateAlertReadAt, type PublicationAlert } from '@/lib/price-alerts'
+import AlertTabs from '@/components/AlertTabs'
+import AlertEventModal from '@/components/AlertEventModal'
+import MonitorDialog from '@/components/MonitorDialog'
+import RulesSection from './RulesSection'
+import SyncButton from '../productos/SyncButton'
+import { archiveLabels, dateBounds, formatAlertDate, relativeLabel, type AlertPage, type AlertOptions, type AlertRule } from '@/lib/price-alerts'
+const subscribe=()=>()=>{}
+const timezone=()=>Intl.DateTimeFormat().resolvedOptions().timeZone
+const field='rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 focus-visible:outline-2 focus-visible:outline-blue-600'
 
-type Rule = { id: string; name: string }
-type Sku = { sku: string; title: string }
-
-type PanelData = {
-  product: {
-    id: string
-    title: string
-    sku: string | null
-    price: number | null
-    sale_price: number | null
-    buybox_price: number | null
-    status: string | null
-    thumbnail: string | null
-    permalink: string | null
-    currency_id: string | null
-    available_quantity: number | null
-    pictures: { secure_url?: string; url?: string }[] | null
-  } | null
-  competitors: {
-    id: string
-    title: string | null
-    price: number | null
-    currency_id: string | null
-    usd_price: number | null
-    thumbnail: string | null
-    permalink: string | null
-    seller_name: string | null
-    status: string | null
-    paused: boolean | null
-  }[]
-}
-
-function formatPrice(price: number | null, currency?: string | null) {
-  if (price == null) return '—'
-  return new Intl.NumberFormat('es-UY', {
-    style: 'currency',
-    currency: currency ?? 'UYU',
-    maximumFractionDigits: 0,
-  }).format(price)
-}
-
-function formatRelative(dateStr: string) {
-  const d = new Date(dateStr)
-  const diff = Date.now() - d.getTime()
-  const mins = Math.floor(diff / 60_000)
-  if (mins < 1) return 'ahora'
-  if (mins < 60) return `hace ${mins} min`
-  const hrs = Math.floor(mins / 60)
-  if (hrs < 24) return `hace ${hrs}h`
-  const days = Math.floor(hrs / 24)
-  if (days < 7) return `hace ${days}d`
-  return new Intl.DateTimeFormat('es-AR', { day: '2-digit', month: '2-digit', year: '2-digit' }).format(d)
-}
-
-function imgUrl(thumbnail: string | null) {
-  if (!thumbnail) return null
-  return thumbnail.replace('http://', 'https://').replace(/-I\.jpg$/, '-F.jpg')
-}
-
-const STATUS_COLOR: Record<string, string> = {
-  active: 'bg-green-100 text-green-700',
-  paused: 'bg-yellow-100 text-yellow-700',
-  closed: 'bg-gray-100 text-gray-600',
-}
-const STATUS_LABEL: Record<string, string> = {
-  active: 'Activo', paused: 'Pausado', closed: 'Cerrado', under_review: 'En revisión', inactive: 'Inactivo',
-}
-
-export default function HistorySection({
-  alerts,
-  setAlerts,
-  skus,
-  rules,
-}: {
-  alerts: PublicationAlert[]
-  setAlerts: Dispatch<SetStateAction<PublicationAlert[]>>
-  skus: Sku[]
-  rules: Rule[]
-}) {
-  const [filter, setFilter] = useState<'all' | 'unread'>('all')
-  const [filterStatus, setFilterStatus] = useState<'all' | 'active'>('all')
-  const [actionError, setActionError] = useState<string | null>(null)
-  const [panelError, setPanelError] = useState<string | null>(null)
-  const [filterSku, setFilterSku] = useState('')
-  const [filterRule, setFilterRule] = useState('')
-  const [filterCompetitor, setFilterCompetitor] = useState('')
-  const [deletingRead, setDeletingRead] = useState(false)
-  const [panelTarget, setPanelTarget] = useState<string | null>(null)
-  const [panelData, setPanelData] = useState<PanelData | null>(null)
-  const [panelLoading, setPanelLoading] = useState(false)
-
-  const competitorOptions = Array.from(new Set(
-    alerts
-      .map(competitorName)
-      .filter(Boolean)
-  )).sort((a, b) => a.localeCompare(b, 'es'))
-
-  function getAlertPanelTarget(alert: PublicationAlert) {
-    return alert.owner_product_id
+type Filters={scope:string;read:string;from:string;to:string;sku:string;seller:string;rule:string}
+const defaults:Filters={scope:'inbox',read:'all',from:'',to:'',sku:'',seller:'',rule:''}
+export default function HistorySection({initialPage,options,rules}:{initialPage:AlertPage;options:AlertOptions;rules:AlertRule[]}){
+  const zone=useSyncExternalStore(subscribe,timezone,()=> 'UTC')
+  const [filters,setFilters]=useState(defaults),[page,setPage]=useState(initialPage)
+  const [cursors,setCursors]=useState<string[]>(['']),[index,setIndex]=useState(0),[refresh,setRefresh]=useState(0)
+  const [loading,setLoading]=useState(false),[error,setError]=useState<string|null>(null)
+  const [pending,setPending]=useState<string|null>(null),[notice,setNotice]=useState<string|null>(null)
+  const [selected,setSelected]=useState<string|null>(null),[showRules,setShowRules]=useState(false)
+  const [undo,setUndo]=useState<{id?:string;batchId?:string}|null>(null)
+  const [previousInitial,setPreviousInitial]=useState(initialPage)
+  if(previousInitial!==initialPage){
+    setPreviousInitial(initialPage);setRefresh(value=>value+1);setLoading(true)
   }
-
-  const visible = filterPublicationAlerts(alerts, {
-    read: filter, sku: filterSku, rule: filterRule, competitor: filterCompetitor, status: filterStatus,
-  })
-  const unreadCount = alerts.filter(a => !a.read_at).length
-  const hasActiveFilters = filter !== 'all' || filterStatus !== 'all' || !!filterSku || !!filterRule || !!filterCompetitor
-
-  useEffect(() => {
-    if (!panelTarget) return
-    const controller = new AbortController()
-    fetch(`/api/product-panel/${encodeURIComponent(panelTarget)}`, { signal: controller.signal })
-      .then(async response => {
-        const data = await response.json()
-        if (!response.ok) throw new Error(data.error ?? 'No se pudo cargar la publicación.')
-        return data
-      })
-      .then(data => { if (!controller.signal.aborted) setPanelData(data) })
-      .catch(error => { if (!controller.signal.aborted) setPanelError(error instanceof Error ? error.message : 'No se pudo cargar la publicación.') })
-      .finally(() => { if (!controller.signal.aborted) setPanelLoading(false) })
-    return () => controller.abort()
-  }, [panelTarget])
-
-  function openPanel(target: string | null) {
-    setPanelData(null)
-    setPanelError(null)
-    setPanelLoading(!!target)
-    setPanelTarget(target)
+  let query='',filterError:string|null=null
+  try {
+    const bounds=dateBounds(filters.from,filters.to)
+    const params=new URLSearchParams({...filters,from:bounds.from,to:bounds.to})
+    if(cursors[index])params.set('cursor',cursors[index])
+    query=params.toString()
+  } catch(e){filterError=e instanceof Error?e.message:'Rango inválido'}
+  useEffect(()=>{
+    if(!query)return
+    const controller=new AbortController()
+    fetch('/api/alert-history?'+query,{signal:controller.signal}).then(async response=>{
+      const data=await response.json()
+      if(!response.ok||!Array.isArray(data.items)||!data.counts)throw new Error(data.error??'No se pudo cargar el listado')
+      if(!controller.signal.aborted){setPage(data);setError(null)}
+    }).catch(e=>{if(!controller.signal.aborted)setError(e instanceof Error?e.message:'Error de conexión')})
+      .finally(()=>{if(!controller.signal.aborted)setLoading(false)})
+    return ()=>controller.abort()
+  },[query,refresh])
+  function change(changes:Partial<Filters>){
+    setFilters(previous=>({...previous,...changes}));setCursors(['']);setIndex(0);setLoading(true)
   }
-
-  async function requestAction(url: string, method: string) {
-    const response = await fetch(url, { method })
-    if (!response.ok) {
-      const data = await response.json()
-      throw new Error(data.error ?? 'No se pudo guardar el cambio.')
-    }
+  function reload(){setLoading(true);setRefresh(value=>value+1)}
+  async function action(url:string,method:string,body?:object){
+    setPending(url);setError(null);setNotice(null)
+    try{
+      const response=await fetch(url,{method,headers:body?{'Content-Type':'application/json'}:undefined,body:body?JSON.stringify(body):undefined})
+      const data=await response.json()
+      if(!response.ok||!data.ok)throw new Error(data.error??'No se pudo guardar el cambio')
+      reload();return data
+    } catch(e){setError(e instanceof Error?e.message:'No se pudo guardar el cambio');return null}
+    finally{setPending(null)}
   }
-
-  async function markRead(id: string) {
-    setActionError(null)
-    try {
-      await requestAction(`/api/alert-history/${id}`, 'PATCH')
-      setAlerts(prev => updateAlertReadAt(prev, new Set([id]), new Date().toISOString()))
-    } catch (error) { setActionError(error instanceof Error ? error.message : 'No se pudo marcar la alerta.') }
+  async function archive(id:string){
+    const result=await action('/api/alert-history/'+id,'DELETE')
+    if(result){setUndo({id});setNotice('Alerta enviada al historial.')}
   }
-
-  async function markAllRead() {
-    setActionError(null)
-    const ids = [...new Set(visible.filter(a => !a.read_at).map(a => a.id))]
-    const results = await Promise.allSettled(ids.map(id => requestAction(`/api/alert-history/${id}`, 'PATCH')))
-    const saved = new Set(ids.filter((_, index) => results[index].status === 'fulfilled'))
-    setAlerts(prev => updateAlertReadAt(prev, saved, new Date().toISOString()))
-    if (saved.size !== ids.length) setActionError('No se pudieron marcar todas las alertas. Volvé a intentarlo.')
+  async function undoArchive(){
+    if(!undo)return
+    const data=undo.id?await action('/api/alert-history/'+undo.id,'PATCH',{restore:true})
+      :await action('/api/alert-history','PATCH',{action:'restore_batch',batchId:undo.batchId})
+    if(data){setUndo(null);setNotice(data.blocked?`${data.count} restauradas; ${data.blocked} permanecen en Historial porque ya no están disponibles.`:'Archivo deshecho.')}
   }
-
-  async function deleteRead() {
-    if (!confirm('¿Eliminar todas las alertas leídas?')) return
-    setDeletingRead(true)
-    setActionError(null)
-    try {
-      await requestAction('/api/alert-history', 'DELETE')
-      setAlerts(prev => prev.filter(a => !a.read_at))
-    } catch (error) { setActionError(error instanceof Error ? error.message : 'No se pudieron eliminar las alertas.') }
-    finally { setDeletingRead(false) }
+  async function archiveRead(){
+    setPending('impact');setError(null)
+    try{
+      const response=await fetch('/api/alert-history?'+query+'&impact=read'),impact=await response.json()
+      if(!response.ok)throw new Error(impact.error??'No se pudo calcular el alcance')
+      if(!impact.count){setNotice('No hay alertas leídas para archivar.');return}
+      if(!confirm(`Archivar ${impact.count} alertas leídas que coinciden con los filtros, en todas las páginas. Se conservarán en Historial.`))return
+      const data=await action('/api/alert-history?'+query,'DELETE')
+      if(data){setUndo({batchId:data.batchId});setNotice(`${data.count} alertas enviadas al historial.`)}
+    }catch(e){setError(e instanceof Error?e.message:'No se pudo archivar')}
+    finally{setPending(null)}
   }
-
-  async function deleteAlert(id: string) {
-    setActionError(null)
-    try {
-      await requestAction(`/api/alert-history/${id}`, 'DELETE')
-      setAlerts(prev => removeAlerts(prev, new Set([id])))
-    } catch (error) { setActionError(error instanceof Error ? error.message : 'No se pudo eliminar la alerta.') }
-  }
-
-  function resetFilters() {
-    setFilter('all')
-    setFilterStatus('all')
-    setFilterSku('')
-    setFilterRule('')
-    setFilterCompetitor('')
-  }
-
-  // Build sorted price list for panel
-  const panelEntries = (() => {
-    if (!panelData?.product) return []
-    const { price: pubPrice, sale_price: salePrice, currency_id } = panelData.product
-    type Entry = { key: string; label: string; price: number; isOurs: boolean; oursType?: 'pub' | 'sale'; usd_price?: number | null; thumbnail?: string | null; permalink?: string | null; seller?: string | null }
-    const entries: Entry[] = []
-    if (salePrice != null) entries.push({ key: 'our-sale', label: 'Mi precio oferta', price: salePrice, isOurs: true, oursType: 'sale' })
-    else if (pubPrice != null) entries.push({ key: 'our-pub', label: 'Mi precio', price: pubPrice, isOurs: true, oursType: 'pub' })
-    for (const c of panelData.competitors) {
-      if (c.price != null && !c.paused && !['paused', 'closed'].includes(c.status ?? '')) {
-        entries.push({ key: c.id, label: c.seller_name ?? c.title ?? c.id, price: c.price, isOurs: false, usd_price: c.usd_price, thumbnail: c.thumbnail, permalink: c.permalink, seller: c.seller_name })
-      }
-    }
-    const refPrice = salePrice ?? pubPrice
-    return entries
-      .sort((a, b) => a.price - b.price)
-      .map(e => ({
-        ...e,
-        diff: refPrice && !e.isOurs ? ((e.price - refPrice) / refPrice) * 100 : null,
-        currency: currency_id,
-      }))
-  })()
-
-  return (
-    <section>
-      {actionError && <p role="alert" className="mb-4 rounded-lg bg-red-50 p-3 text-sm text-red-700">{actionError}</p>}
-      {/* Toolbar */}
-      <div className="bg-white border border-gray-100 rounded-xl mb-4 overflow-hidden">
-        <div className="flex flex-wrap items-center gap-2 px-4 py-2.5 border-b border-gray-100">
-          {/* Read/all segmented toggle */}
-          <div className="flex rounded-lg bg-gray-50 p-0.5 shrink-0">
-            <button
-              onClick={() => setFilter('unread')}
-              className={`relative px-3 py-1 text-xs font-medium rounded-md transition-all ${filter === 'unread' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
-            >
-              No leídas
-              {unreadCount > 0 && (
-                <span className={`ml-1.5 text-[10px] font-semibold px-1.5 rounded ${filter === 'unread' ? 'bg-red-100 text-red-600' : 'bg-gray-200 text-gray-500'}`}>{unreadCount}</span>
-              )}
-            </button>
-            <button
-              onClick={() => setFilter('all')}
-              className={`px-3 py-1 text-xs font-medium rounded-md transition-all ${filter === 'all' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}
-            >
-              Todas
-            </button>
-          </div>
-
-          <div className="h-5 w-px bg-gray-200 mx-1 shrink-0" />
-
-          <Select
-            aria-label="Estado de la publicación"
-            variant="filter"
-            value={filterStatus}
-            onValueChange={value => setFilterStatus(value as 'all' | 'active')}
-            options={[{ value: 'all', label: 'Todos los estados' }, { value: 'active', label: 'Activos' }]}
-          />
-
-          {rules.length > 0 && (
-            <Select
-              aria-label="Regla de alerta"
-              variant="filter"
-              value={filterRule}
-              onValueChange={value => setFilterRule(value)}
-              options={[{ value: '', label: 'Todas las reglas' }, ...rules.map(r => ({ value: r.id, label: r.name }))]}
-            />
-          )}
-
-          <Select
-            aria-label="SKU"
-            variant="filter"
-            value={filterSku}
-            onValueChange={value => setFilterSku(value)}
-            options={[{ value: '', label: 'Todos los SKU' }, ...skus.map(s => ({ value: s.sku, label: s.sku }))]}
-          />
-
-          {competitorOptions.length > 0 && (
-            <Select
-              aria-label="Competidor"
-              variant="filter"
-              value={filterCompetitor}
-              onValueChange={value => setFilterCompetitor(value)}
-              options={[{ value: '', label: 'Todos los competidores' }, ...competitorOptions.map(name => ({ value: name, label: name }))]}
-            />
-          )}
-
-          <div className="flex-1" />
-
-          {hasActiveFilters && (
-            <button
-              onClick={resetFilters}
-              className="text-[11px] text-gray-400 hover:text-gray-700 font-medium px-2 py-1 rounded hover:bg-gray-50"
-            >
-              Limpiar filtros
-            </button>
-          )}
+  const date=(value:string)=>formatAlertDate(value,zone)
+  return <div className="space-y-5">
+    <header className="flex flex-wrap items-start justify-between gap-4">
+      <div><h1 className="text-2xl font-bold text-slate-900">Alertas de precio</h1><p className="mt-1 text-sm text-slate-500">Cuándo cambió el precio de tus rivales. Los eventos se conservan.</p></div>
+      <div className="flex flex-wrap gap-3"><SyncButton/><button className={field} onClick={()=>setShowRules(true)}>Reglas · {rules.length}</button></div>
+    </header>
+    <AlertTabs label="Sección de alertas" panelId="alert-scope" value={filters.scope} onChange={scope=>change({scope})}
+      options={[{value:'inbox',label:'Alertas'},{value:'history',label:'Historial'}]}/>
+    <section role="tabpanel" id="alert-scope" aria-labelledby={`alert-scope-${filters.scope}`} className="space-y-4">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4" aria-label="Resumen de resultados">
+        {[['Total',page.counts.total],['Desventaja',page.counts.disadvantage],['Ventaja',page.counts.advantage],['Empate',page.counts.tie]].map(([label,value])=><div key={label} className="rounded-xl border border-slate-200 bg-white px-4 py-3"><p className="text-xs text-slate-500">{label}</p><p className="text-xl font-bold text-slate-900">{value}</p></div>)}
+      </div>
+      <div className="space-y-4 rounded-xl border border-slate-200 bg-white p-4">
+        <AlertTabs label="Lectura de alertas" panelId="alert-read" value={filters.read} onChange={read=>change({read})}
+          options={[{value:'all',label:`Todas (${page.counts.all})`},{value:'unread',label:`No leídas (${page.counts.unread})`},{value:'read',label:`Leídas (${page.counts.read})`}]}/>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          <label className="text-xs text-slate-600">Desde<input type="date" value={filters.from} onChange={e=>change({from:e.target.value})} className={`mt-1 block w-full ${field}`}/></label>
+          <label className="text-xs text-slate-600">Hasta<input type="date" value={filters.to} onChange={e=>change({to:e.target.value})} className={`mt-1 block w-full ${field}`}/></label>
+          <div className="min-w-0 text-xs text-slate-600"><label htmlFor="alert-filter-sku">SKU</label><Select id="alert-filter-sku" aria-label="SKU" searchable value={filters.sku} onValueChange={sku=>change({sku})} className="mt-1" options={[{value:'',label:'Todos los SKU'},...options.skus.map(sku=>({value:sku,label:sku}))]}/></div>
+          <div className="min-w-0 text-xs text-slate-600"><label htmlFor="alert-filter-seller">Vendedor rival</label><Select id="alert-filter-seller" aria-label="Vendedor rival" searchable value={filters.seller} onValueChange={seller=>change({seller})} className="mt-1" options={[{value:'',label:'Todos los vendedores'},...options.sellers.map(seller=>({value:seller,label:seller}))]}/></div>
+          <div className="min-w-0 text-xs text-slate-600"><label htmlFor="alert-filter-rule">Regla</label><Select id="alert-filter-rule" aria-label="Regla" searchable value={filters.rule} onValueChange={rule=>change({rule})} className="mt-1" options={[{value:'',label:'Todas las reglas'},...options.rules.map(rule=>({value:rule.id,label:rule.name}))]}/></div>
         </div>
-
-        <div className="flex items-center justify-between px-4 py-2 bg-gray-50/50 text-xs text-gray-500">
-          <span>
-            {visible.length} {visible.length === 1 ? 'alerta' : 'alertas'}
-            {visible.length !== alerts.length && (
-              <span className="text-gray-400"> de {alerts.length}</span>
-            )}
-          </span>
-          <div className="flex items-center gap-3">
-            {visible.some(a => !a.read_at) && (
-              <button onClick={markAllRead} className="text-blue-600 hover:text-blue-800 font-medium">
-                Marcar todas leídas
-              </button>
-            )}
-            {alerts.some(a => a.read_at) && (
-              <button onClick={deleteRead} disabled={deletingRead} className="text-gray-400 hover:text-red-500 transition-colors">
-                Limpiar leídas
-              </button>
-            )}
-          </div>
+        <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-slate-500">
+          <span>Fecha de detección · {zone} · Hasta incluye el día completo.</span>
+          <button className="text-blue-700 underline" onClick={()=>change({...defaults,scope:filters.scope})}>Limpiar filtros</button>
         </div>
       </div>
-
-      {visible.length === 0 ? (
-        <div className="bg-white border border-gray-100 rounded-xl p-16 text-center">
-          <div className="w-12 h-12 rounded-full bg-gray-50 mx-auto mb-3 flex items-center justify-center">
-            <svg className="w-6 h-6 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M5 13l4 4L19 7" />
-            </svg>
-          </div>
-          <p className="text-sm font-medium text-gray-700">
-            {filter === 'unread' ? 'Todo al día' : 'Sin alertas registradas'}
-          </p>
-          <p className="text-xs text-gray-400 mt-1">
-            {filter === 'unread' ? 'No hay alertas sin leer.' : 'Cuando se disparen alertas aparecerán aquí.'}
-          </p>
+      {filterError&&<p role="alert" className="text-sm text-red-700">{filterError}</p>}
+      {error&&<div role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-800">{error}. Se conservan los últimos datos mostrados. <button className="underline" onClick={reload}>Reintentar</button></div>}
+      {notice&&<div role="status" className="rounded-lg bg-blue-50 p-3 text-sm text-blue-900">{notice} {undo&&<button disabled={!!pending} className="ml-3 font-semibold underline" onClick={undoArchive}>Deshacer</button>}</div>}
+      <div className="flex flex-wrap items-center justify-between gap-3 text-sm text-slate-500">
+        <span role="status">{filterError?'Rango de fechas inválido':loading?'Actualizando resultados…':`${page.counts.total} eventos · más recientes primero`}</span>
+        <div className="flex gap-4">
+          <button disabled={!!pending||loading||!!filterError} className="text-blue-700 underline disabled:opacity-40" onClick={()=>action('/api/alert-history?'+query,'PATCH',{action:'read'})}>Marcar resultados como leídos</button>
+          {filters.scope==='inbox'&&<button disabled={!!pending||loading||!!filterError} className="text-slate-700 underline disabled:opacity-40" onClick={archiveRead}>Archivar leídas</button>}
         </div>
-      ) : (
-        <div className="space-y-2">
-          {visible.map(alert => {
-            const isRead = !!alert.read_at
-            const priceWentDown = alert.competitor_price_after != null && alert.competitor_price_before != null
-              && alert.competitor_price_after < alert.competitor_price_before
-            const diff = alert.diff_pct
-            const panelLookup = getAlertPanelTarget(alert)
-            const isActive = panelTarget === panelLookup
-            const ruleType = alert.ml_price_alert_rules?.rule_type ?? ''
-            const isCheaper = ruleType === 'competitor_cheaper' || ruleType === 'price_diff_pct_above'
-            const isPricier = ruleType === 'competitor_pricier' || ruleType === 'price_diff_pct_below'
-
-            const tone = isRead ? 'read' : isCheaper ? 'cheaper' : isPricier ? 'pricier' : 'changed'
-            const toneConfig = {
-              read: { border: 'border-l-gray-200', badge: 'bg-gray-50 text-gray-400', accent: 'text-gray-500' },
-              cheaper: { border: 'border-l-red-500', badge: 'bg-red-50 text-red-600', accent: 'text-red-600' },
-              pricier: { border: 'border-l-blue-500', badge: 'bg-blue-50 text-blue-600', accent: 'text-blue-600' },
-              changed: { border: 'border-l-amber-500', badge: 'bg-amber-50 text-amber-600', accent: 'text-amber-600' },
-            }[tone]
-
-            const thumb = imgUrl(alert.ml_competitor_items?.thumbnail ?? null)
-
-            return (
-              <div
-                key={alert.row_key}
-                onClick={() => openPanel(isActive ? null : panelLookup)}
-                className={`group relative bg-white border border-gray-100 border-l-4 ${toneConfig.border} rounded-xl transition-all cursor-pointer hover:shadow-md hover:border-gray-200 ${isActive ? 'ring-2 ring-blue-400 ring-offset-1' : ''} ${isRead ? 'opacity-70' : ''}`}
-              >
-                <div className="flex gap-3 p-4">
-                  {/* Thumb or indicator */}
-                  <div className="shrink-0">
-                    {thumb ? (
-                      <div className="relative w-12 h-12 rounded-lg overflow-hidden bg-gray-50 border border-gray-100">
-                        <Image src={thumb} alt="" fill className="object-contain" unoptimized />
-                      </div>
-                    ) : (
-                      <div className={`w-12 h-12 rounded-lg flex items-center justify-center ${toneConfig.badge}`}>
-                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          {isCheaper && <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M12 4v16m0 0l-5-5m5 5l5-5" />}
-                          {isPricier && <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.2} d="M12 20V4m0 0l-5 5m5-5l5 5" />}
-                          {!isCheaper && !isPricier && <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />}
-                        </svg>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Main content */}
-                  <div className="flex-1 min-w-0">
-                    {/* Row 1: SKU + Title + time */}
-                    <div className="flex items-baseline gap-2 min-w-0">
-                      <span className="font-mono text-[10px] bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded shrink-0">{alert.owner_sku?.trim() || 'Sin SKU'}</span>
-                      <h3 className="text-sm font-semibold text-gray-900 truncate flex-1">
-                        {alert.owner_title}
-                      </h3>
-                      <span className="text-[11px] text-gray-400 shrink-0">{formatRelative(alert.fired_at)}</span>
-                    </div>
-
-                    <div className="flex items-center gap-2 mt-1 text-[10px]">
-                      <span className="font-mono text-gray-500">{alert.owner_product_id}</span>
-                      <span className={`px-1.5 py-0.5 rounded ${STATUS_COLOR[alert.owner_status ?? ''] ?? 'bg-gray-100 text-gray-600'}`}>
-                        {STATUS_LABEL[alert.owner_status ?? ''] ?? alert.owner_status ?? 'Sin estado'}
-                      </span>
-                    </div>
-
-                    {/* Row 2: rule + competitor */}
-                    <div className="flex items-center gap-2 mt-1.5 flex-wrap">
-                      {alert.ml_price_alert_rules && (
-                        <RuleTypeBadge
-                          ruleType={alert.ml_price_alert_rules.rule_type}
-                          thresholdPct={alert.diff_pct != null ? Math.abs(alert.diff_pct) : null}
-                        />
-                      )}
-                      {(alert.ml_competitor_items?.seller_name || alert.ml_competitor_items?.title) && (
-                        <span className="inline-flex items-center gap-1 text-xs text-gray-600">
-                          <svg className="w-3 h-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-                          </svg>
-                          <span className="truncate max-w-55">{alert.ml_competitor_items?.seller_name ?? alert.ml_competitor_items?.title}</span>
-                        </span>
-                      )}
-                    </div>
-
-                    {/* Row 3: Prices */}
-                    <div className="flex items-end gap-6 mt-3 flex-wrap">
-                      {/* Competitor price block */}
-                      <div>
-                        <p className="text-[10px] uppercase tracking-wider text-gray-400 font-medium mb-0.5">Competidor</p>
-                        <div className="flex items-baseline gap-2">
-                          {alert.competitor_price_before != null && (
-                            <span className="text-gray-400 line-through text-xs">{formatPrice(alert.competitor_price_before)}</span>
-                          )}
-                          <span className={`text-base font-bold ${priceWentDown ? 'text-red-600' : 'text-green-600'}`}>
-                            {formatPrice(alert.competitor_price_after)}
-                          </span>
-                        </div>
-                      </div>
-
-                      {/* Our price */}
-                      {alert.our_price != null && (
-                        <div>
-                          <p className="text-[10px] uppercase tracking-wider text-gray-400 font-medium mb-0.5">Nuestro</p>
-                          <span className="text-base font-semibold text-gray-700">{formatPrice(alert.our_price)}</span>
-                        </div>
-                      )}
-
-                      {/* Diff pill */}
-                      {diff != null && (
-                        <div className="ml-auto">
-                          <span className={`inline-flex items-center gap-1 text-sm font-bold px-2.5 py-1 rounded-lg ${diff < 0 ? 'bg-red-50 text-red-600' : 'bg-green-50 text-green-700'}`}>
-                            {diff < 0 ? (
-                              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M19 14l-7 7m0 0l-7-7m7 7V3" /></svg>
-                            ) : (
-                              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 10l7-7m0 0l7 7m-7-7v18" /></svg>
-                            )}
-                            {diff < 0 ? `${diff.toFixed(1)}%` : `+${diff.toFixed(1)}%`}
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Hover actions (top-right) */}
-                <div
-                  className="absolute top-2 right-2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity"
-                  onClick={e => e.stopPropagation()}
-                >
-                  {!isRead && (
-                    <button
-                      onClick={() => markRead(alert.id)}
-                      className="p-1.5 rounded-md bg-white border border-gray-200 text-gray-500 hover:text-blue-600 hover:border-blue-300 hover:bg-blue-50 transition-all shadow-sm"
-                      title="Marcar como leída"
-                    >
-                      <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                      </svg>
-                    </button>
-                  )}
-                  <button
-                    onClick={() => deleteAlert(alert.id)}
-                    className="p-1.5 rounded-md bg-white border border-gray-200 text-gray-400 hover:text-red-500 hover:border-red-300 hover:bg-red-50 transition-all shadow-sm"
-                    title="Eliminar"
-                  >
-                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </button>
-                </div>
+      </div>
+      <div role="tabpanel" id="alert-read" aria-labelledby={`alert-read-${filters.read}`} aria-busy={loading} className="space-y-3">
+        {!page.items.length&&!loading&&<p className="rounded-xl border border-dashed p-8 text-center text-slate-500">No hay eventos para estos filtros.</p>}
+        {page.items.map(event=>{
+          const snapshot=event.event_snapshot, own=snapshot.own, rival=snapshot.rival
+          const thumbnail=own.thumbnail?.replace(/^http:/,'https:')
+          const border=snapshot.relativePct==null?'border-slate-200':snapshot.relativePct<0?'border-red-300':snapshot.relativePct>0?'border-emerald-300':'border-blue-300'
+          return <article key={event.id} className={`flex items-start gap-3 rounded-xl border bg-white p-4 ${border}`} aria-label={`Alerta de ${own.title??event.our_sku}`}>
+            <button type="button" onClick={()=>setSelected(event.id)} className="flex min-w-0 flex-1 gap-3 rounded-lg text-left focus-visible:outline-2 focus-visible:outline-blue-600">
+              {thumbnail?<Image src={thumbnail} alt="" width={64} height={64} unoptimized className="h-16 w-16 shrink-0 rounded-lg object-contain"/>:<span className="flex h-16 w-16 shrink-0 items-center justify-center rounded-lg bg-slate-50 text-xs text-slate-400">Sin imagen</span>}
+              <div className="min-w-0 flex-1 space-y-1">
+                <h2 className="text-sm font-semibold leading-snug text-slate-900"><span className="mr-2 inline-block rounded bg-slate-100 px-1.5 py-0.5 align-middle font-mono text-[10px] font-normal text-slate-500" aria-label={`SKU ${own.sku||event.our_sku||'Sin SKU'}`}>{own.sku||event.our_sku||'Sin SKU'}</span>{own.title??'Publicación pendiente de identificación'}</h2>
+                <p className="text-xs text-slate-500"><time dateTime={event.fired_at}>{date(event.fired_at)}</time></p>
+                <p className="break-words text-xs text-slate-600">{rival.sellerName??'Sin vendedor identificado'}</p>
+                <p className={`inline-block rounded-lg px-2 py-1 text-xs font-semibold ${snapshot.relativePct==null?'bg-slate-50 text-slate-500':snapshot.relativePct<0?'bg-red-50 text-red-700':snapshot.relativePct>0?'bg-emerald-50 text-emerald-700':'bg-blue-50 text-blue-700'}`}>{relativeLabel(snapshot.relativePct)}</p>
+                {event.archived_at&&<p className="pt-1 text-xs text-slate-500">{archiveLabels[event.archive_reason??'']??'Archivada'} · {date(event.archived_at)}</p>}
               </div>
-            )
-          })}
-        </div>
-      )}
-
-      {/* Product panel — slides in from the right */}
-      {panelTarget && (
-        <div className="fixed inset-0 z-40 bg-black/20 backdrop-blur-[1px]" onClick={() => openPanel(null)}>
-          <div
-            className="absolute top-0 right-0 h-full w-full md:w-130 bg-white shadow-2xl flex flex-col"
-            onClick={e => e.stopPropagation()}
-          >
-            {panelLoading || !panelData ? (
-              <div className="flex-1 flex items-center justify-center text-gray-400 text-sm">
-                {panelLoading ? 'Cargando...' : panelError ?? 'Sin datos'}
-              </div>
-            ) : (
-              <>
-                {/* Header */}
-                <div className="flex items-start justify-between px-5 py-3 border-b border-gray-100 shrink-0">
-                  <div className="min-w-0 flex-1 pr-3">
-                    <p className="text-xs text-gray-400 mb-0.5 font-mono">{panelTarget}</p>
-                    <h2 className="font-semibold text-gray-900 leading-snug line-clamp-2 text-sm">
-                      {panelData.product?.title ?? visible.find(a => getAlertPanelTarget(a) === panelTarget)?.owner_title ?? panelTarget}
-                    </h2>
-                  </div>
-                  <button onClick={() => openPanel(null)} className="text-gray-400 hover:text-gray-700 text-2xl leading-none shrink-0">×</button>
-                </div>
-
-                {/* Image + key info */}
-                {panelData.product && (
-                  <div className="flex border-b border-gray-100 shrink-0">
-                    <div className="w-36 shrink-0 bg-gray-50 flex items-center justify-center p-3 border-r border-gray-100">
-                      {panelData.product.thumbnail ? (
-                        <Image
-                          src={imgUrl(panelData.product.thumbnail)!}
-                          alt={panelData.product.title}
-                          width={120}
-                          height={120}
-                          className="object-contain"
-                          style={{ width: 'auto', height: 'auto', maxWidth: '100%', maxHeight: '120px' }}
-                          unoptimized
-                        />
-                      ) : (
-                        <div className="w-full h-28 bg-gray-100 rounded" />
-                      )}
-                    </div>
-                    <div className="flex-1 p-4 space-y-2">
-                      <div className="flex gap-3 text-xs">
-                        <div>
-                          <p className="text-gray-400 uppercase tracking-wide font-medium">MLU</p>
-                          <p className="font-mono text-gray-900 font-semibold">{panelData.product.id}</p>
-                        </div>
-                        {panelData.product.sku && (
-                          <div>
-                            <p className="text-gray-400 uppercase tracking-wide font-medium">SKU</p>
-                            <p className="font-mono text-gray-900 font-semibold">{panelData.product.sku}</p>
-                          </div>
-                        )}
-                      </div>
-                      <div className="border-t border-gray-50 pt-2 space-y-1">
-                        {panelData.product.sale_price != null ? (
-                          <div className="flex items-baseline justify-between">
-                            <span className="text-xs text-emerald-600 font-medium">Oferta</span>
-                            <span className="text-lg font-bold text-emerald-600">{formatPrice(panelData.product.sale_price, panelData.product.currency_id)}</span>
-                          </div>
-                        ) : panelData.product.price != null ? (
-                          <div className="flex items-baseline justify-between">
-                            <span className="text-xs text-gray-400">Precio</span>
-                            <span className="text-lg font-bold text-gray-900">{formatPrice(panelData.product.price, panelData.product.currency_id)}</span>
-                          </div>
-                        ) : null}
-                        {panelData.product.sale_price != null && panelData.product.price != null && panelData.product.sale_price !== panelData.product.price && (
-                          <div className="flex items-baseline justify-between">
-                            <span className="text-xs text-gray-300">Lista</span>
-                            <span className="text-xs text-gray-400 line-through">{formatPrice(panelData.product.price, panelData.product.currency_id)}</span>
-                          </div>
-                        )}
-                        {panelData.product.buybox_price != null && (
-                          <div className="flex items-baseline justify-between">
-                            <span className="text-xs text-gray-400">Buy-box rival</span>
-                            <span className="text-base font-semibold text-orange-500">{formatPrice(panelData.product.buybox_price, panelData.product.currency_id)}</span>
-                          </div>
-                        )}
-                      </div>
-                      <div className="flex items-center justify-between pt-1">
-                        <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_COLOR[panelData.product.status ?? ''] ?? 'bg-gray-100 text-gray-600'}`}>
-                          {STATUS_LABEL[panelData.product.status ?? ''] ?? panelData.product.status ?? '—'}
-                        </span>
-                        {panelData.product.permalink && (
-                          <a href={panelData.product.permalink} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-500 hover:text-blue-700 font-medium">
-                            Ver en ML →
-                          </a>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* Price comparison */}
-                <div className="flex-1 overflow-y-auto p-4">
-                  {panelEntries.length === 0 ? (
-                    <p className="text-center text-gray-400 text-sm py-8">Sin datos de precios</p>
-                  ) : (
-                    <div className="space-y-2">
-                      <p className="text-xs text-gray-400 uppercase tracking-wide font-medium mb-3">Comparación de precios</p>
-                      {panelEntries.map((entry, idx) => {
-                        const medal = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : null
-                        const isCheaper = entry.diff != null && entry.diff < 0
-                        return (
-                          <div key={entry.key} className={`flex items-center gap-3 px-4 py-3 rounded-xl border ${entry.isOurs ? (entry.oursType === 'sale' ? 'bg-emerald-50 border-emerald-300 shadow-sm' : 'bg-gray-50 border-gray-300 shadow-sm') : 'bg-white border-gray-100'}`}>
-                            <div className="w-7 text-center shrink-0">
-                              {medal ? <span className="text-xl">{medal}</span> : <span className="text-sm font-bold text-gray-400">{idx + 1}</span>}
-                            </div>
-                            {entry.isOurs ? (
-                              <div className={`w-9 h-9 rounded-lg flex items-center justify-center shrink-0 ${entry.oursType === 'sale' ? 'bg-emerald-200' : 'bg-gray-200'}`}>
-                                <svg className={`w-4 h-4 ${entry.oursType === 'sale' ? 'text-emerald-700' : 'text-gray-500'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" /></svg>
-                              </div>
-                            ) : entry.thumbnail ? (
-                              <Image src={imgUrl(entry.thumbnail)!} alt="" width={36} height={36} className="w-9 h-9 rounded-lg object-contain bg-gray-50 shrink-0" unoptimized />
-                            ) : (
-                              <div className="w-9 h-9 rounded-lg bg-gray-100 shrink-0" />
-                            )}
-                            <div className="flex-1 min-w-0">
-                              <p className={`text-sm font-medium line-clamp-1 ${entry.isOurs ? (entry.oursType === 'sale' ? 'text-emerald-700' : 'text-gray-600') : 'text-gray-900'}`}>{entry.label}</p>
-                              <p className="text-xs text-gray-400">{entry.isOurs ? (entry.oursType === 'sale' ? 'Nuestro — oferta' : 'Nuestro') : entry.seller ?? 'Competidor'}</p>
-                            </div>
-                            <div className="text-right shrink-0">
-                              <p className="text-base font-bold text-gray-900">{formatPrice(entry.price, entry.currency)}</p>
-                              {!entry.isOurs && entry.usd_price != null && (
-                                <p className="text-xs text-gray-400 mt-0.5">
-                                  USD {entry.usd_price.toLocaleString('es-UY', { maximumFractionDigits: 0 })}
-                                </p>
-                              )}
-                              {entry.diff != null && (
-                                <p className={`text-xs font-semibold mt-0.5 ${isCheaper ? 'text-red-500' : 'text-green-600'}`}>
-                                  {isCheaper ? `${entry.diff.toFixed(0)}%` : `+${entry.diff.toFixed(0)}%`}
-                                </p>
-                              )}
-                            </div>
-                            {entry.permalink && (
-                              <a href={entry.permalink} target="_blank" rel="noopener noreferrer" className="text-gray-300 hover:text-blue-500 transition-colors shrink-0" onClick={e => e.stopPropagation()}>
-                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
-                              </a>
-                            )}
-                          </div>
-                        )
-                      })}
-                    </div>
-                  )}
-                </div>
-              </>
-            )}
-          </div>
-        </div>
-      )}
+            </button>
+            <div className="flex shrink-0 flex-col gap-2 sm:flex-row">
+              <button disabled={!!pending} aria-label={event.read_at?'Marcar como no leída':'Marcar como leída'} title={event.read_at?'Marcar como no leída':'Marcar como leída'} onClick={()=>action('/api/alert-history/'+event.id,'PATCH',{read:!event.read_at})} className={`${field} !p-2 disabled:opacity-40`}>{event.read_at?'↶':'✓'}</button>
+              {!event.archived_at&&<button disabled={!!pending} aria-label="Archivar alerta" title="Eliminar de Alertas y conservar en Historial" onClick={()=>archive(event.id)} className={`${field} !p-2 disabled:opacity-40`}>×</button>}
+            </div>
+          </article>
+        })}
+      </div>
+      <nav aria-label="Paginación de alertas" className="flex items-center justify-between gap-3">
+        <button className={field} disabled={index===0||loading} onClick={()=>{setIndex(v=>v-1);setLoading(true)}}>← Anterior</button>
+        <span className="text-xs text-slate-500">Página {index+1} · hasta 50 eventos por página</span>
+        <button className={field} disabled={!page.nextCursor||loading} onClick={()=>{setCursors(previous=>[...previous.slice(0,index+1),page.nextCursor!]);setIndex(v=>v+1);setLoading(true)}}>Siguiente →</button>
+      </nav>
     </section>
-  )
+    {selected&&<AlertEventModal id={selected} zone={zone} onClose={()=>setSelected(null)}/>}
+    {showRules&&<MonitorDialog title="Reglas de alerta" onClose={()=>setShowRules(false)}><RulesSection initialRules={rules} skus={options.skus.map(sku=>({sku,title:sku}))}/></MonitorDialog>}
+  </div>
 }

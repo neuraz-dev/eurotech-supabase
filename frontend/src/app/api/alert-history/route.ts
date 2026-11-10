@@ -1,42 +1,27 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
+import { withMonitorAuth, readBody, ApiError } from '@/lib/monitoring/server'
+import { loadAlertPage, bulkAlertAction, alertActor, alertId } from '@/lib/alert-server'
 
-export async function GET(req: NextRequest) {
-  const { searchParams } = req.nextUrl
-  const unread = searchParams.get('unread') === 'true'
-  const sku = searchParams.get('sku')
-  const limit = Number(searchParams.get('limit') ?? 100)
-
-  const admin = createAdminClient()
-
-  let query = admin
-    .schema('ml').from('ml_price_alerts')
-    .select(`
-      id, our_sku, competitor_item_id,
-      our_price, catalog_price, competitor_price_before, competitor_price_after,
-      diff_pct, fired_at, read_at,
-      ml_price_alert_rules ( id, name, rule_type ),
-      ml_competitor_items ( title, seller_name, thumbnail )
-    `)
-    .order('fired_at', { ascending: false })
-    .limit(limit)
-
-  if (unread) query = query.is('read_at', null)
-  if (sku) query = query.eq('our_sku', sku)
-
-  const { data, error } = await query
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-  return NextResponse.json(data)
-}
-
-export async function DELETE(req: NextRequest) {
-  // Delete all read alerts
-  const admin = createAdminClient()
-  const { error } = await admin
-    .schema('ml').from('ml_price_alerts')
-    .delete()
-    .not('read_at', 'is', null)
-
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-  return NextResponse.json({ ok: true })
-}
+export const GET=withMonitorAuth(async(req:NextRequest)=>{
+  const params=new URLSearchParams(req.nextUrl.searchParams)
+  if(params.get('impact')==='read'){
+    params.set('scope','inbox');params.set('read','read');params.delete('cursor')
+    const page=await loadAlertPage(params)
+    return NextResponse.json({count:page.counts.total,scope:'Alertas leídas que coinciden con los filtros, en todas las páginas'})
+  }
+  return NextResponse.json(await loadAlertPage(params))
+})
+export const DELETE=withMonitorAuth(async(req:NextRequest)=>NextResponse.json(await bulkAlertAction('archive_read',req.nextUrl.searchParams)))
+export const PATCH=withMonitorAuth(async(req:NextRequest)=>{
+  const body=await readBody(req)
+  if(body.action==='restore_batch'){
+    const {data,error}=await createAdminClient().schema('ml').rpc('restore_monitor_alert_batch',{
+      p_batch:alertId(String(body.batchId)),p_actor:await alertActor(),
+    })
+    if(error)throw error
+    return NextResponse.json(data)
+  }
+  if(body.action!=='read')throw new ApiError(400,'Acción inválida')
+  return NextResponse.json(await bulkAlertAction('read',req.nextUrl.searchParams))
+})

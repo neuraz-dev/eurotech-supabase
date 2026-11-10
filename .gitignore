@@ -3,3 +3,16 @@
 *.env.local
 supabase/functions/**/.env
 .agents
+# Local monitoring tests
+frontend/.test-auth/
+frontend/test-results/
+frontend/playwright-report/
+scripts/__pycache__/
+/.local-review/
+# Local review documents; do not publish to GitHub
+/ALERT_EVENTS_REVIEW.md
+/ALERT_PRODUCTION_AUDIT.md
+/INFORME_FUNCIONAL_MONITOREO.md
+/INFORME_MEJORAS_PRODUCTO_UX.md
+/PRIORITARY_IMPROVEMENTS_REVIEW.md
+/SOURCE_RESOLUTION_REVIEW.md

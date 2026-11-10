@@ -3,12 +3,18 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
+    "dev": "next dev --webpack",
+    "build": "next build --webpack",
     "start": "next start",
     "lint": "eslint",
     "test:sync": "node --experimental-strip-types tests/ml-sync-competitor.test.ts",
-    "test:alerts": "node --experimental-strip-types tests/price-alerts.test.ts"
+    "test:sync-flow": "node --experimental-strip-types --test tests/monitor-sync-flow.test.ts tests/catalog-sync.test.ts",
+    "test:alerts": "node --experimental-strip-types tests/price-alerts.test.ts",
+    "test:monitor": "node --experimental-strip-types tests/monitoring.test.ts",
+    "test:sources": "node --experimental-strip-types tests/source-resolution.test.ts",
+    "test:integration": "node --experimental-strip-types tests/monitor-integration.test.ts",
+    "test:e2e": "playwright test",
+    "test:events-ui": "playwright test --config playwright.events.config.ts"
   },
   "dependencies": {
     "@supabase/ssr": "^0.10.0",
@@ -18,6 +24,7 @@
     "react-dom": "19.2.4"
   },
   "devDependencies": {
+    "@playwright/test": "^1.65.0",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
     "@types/react": "^19",
