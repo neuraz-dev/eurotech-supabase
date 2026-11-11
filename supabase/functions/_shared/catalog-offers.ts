@@ -1,10 +1,11 @@
-import { observe, positive, type FxQuote } from './monitoring.ts'
+import { diagnoseCatalog } from './catalog-diagnosis.ts'
+import { observe, positive } from './monitoring.ts'
 import { catalogOfferUrl, safeMarketplaceUrl } from './source-links.ts'
 import type { MlContext } from './ml-observation.ts'
 import type { CatalogBuyBox, CatalogOffer, CatalogSnapshot } from './catalog.ts'
 
 type OfferRow = { item_id: string; seller_id: number; price: number | null; currency_id: string | null; title?: string; seller_name?: string }
-export type CatalogProduct = { id: string; catalog_product_id: string | null; catalog_listing: boolean | null; site_id?: string | null; title?: string | null; sku?: string | null; permalink?: string | null }
+export type CatalogProduct = { catalog_price?:number|null;catalog_currency_id?:string|null;catalog_observed_at?:string|null;id: string; catalog_product_id: string | null; catalog_listing: boolean | null; site_id?: string | null; title?: string | null; sku?: string | null; permalink?: string | null }
 export type CompetitionEvidence = { state: string; itemId: string; winnerId?: string | null; observedAt: string | null; source: 'price_to_win' }
 
 export async function collectCatalogOffers(
@@ -20,16 +21,36 @@ export async function collectCatalogOffers(
       headers: { Authorization: `Bearer ${context.token}` },
       signal: AbortSignal.any([deadline, AbortSignal.timeout(15_000)]),
     })
-    if (!response.ok) throw Object.assign(new Error(`Catálogo HTTP ${response.status}`), { status: response.status, resource })
-    return response.json()
+    if (!response.ok) {
+      const body = response.status === 404 ? await response.json().catch(() => null) : null
+      throw Object.assign(new Error(`Catálogo HTTP ${response.status}`), { status:response.status,resource,
+        noWinners:body?.error === 'not_found' && body?.message === 'No winners found' })
+    }
+    try { return await response.json() } catch { throw new Error('Respuesta de catálogo inválida') }
   }
   const warnings: string[] = []
   const found = new Map<string, OfferRow>()
   let total: number | null = null
   let offset = 0
   let exhausted = false
+  let pageFailed = false
   while (!exhausted) {
-    const page = await get(`/products/${encodeURIComponent(catalogId)}/items?status=active&limit=20&offset=${offset}`)
+    let page
+    try {
+      page = await get(`/products/${encodeURIComponent(catalogId)}/items?status=active&limit=20&offset=${offset}`)
+      if(!Array.isArray(page.results) || page.results.some((row:OfferRow)=>!row || typeof row.item_id!=='string' || !/^ML[AU]\d+$/.test(row.item_id) || !Number.isFinite(row.seller_id)))
+        throw new Error('Respuesta de catálogo inválida')
+    }
+    catch(error) {
+      if(found.size) { pageFailed=true; warnings.push(`La consulta de una página posterior falló; la cobertura es parcial. ${error instanceof Error ? error.message : 'Error de consulta'}`); break }
+      const failure = error as {status:number;resource:string;noWinners?:boolean}
+      if(failure.status !== 404)throw error
+      const diagnosis = await diagnoseCatalog(catalogId,products.map(p=>p.id),context,failure)
+      return {snapshot:{catalogId,offers:[],total:diagnosis.kind==='no_offers'?0:null,
+        coverage:diagnosis.kind==='no_offers'?'complete':'unknown',observedAt:diagnosis.observedAt,
+        fx:context.fx,diagnosis,warnings:[],buyBox:{state:'not_verified',winnerId:null,winner:null,
+          observedAt:null,sourceItemId:null,source:'price_to_win'}},competitions:new Map()}
+    }
     if (!Array.isArray(page.results)) throw new Error('Respuesta de catálogo inválida')
     if (Number.isInteger(page.paging?.total) && page.paging.total >= 0) total = page.paging.total
     const previousSize = found.size
@@ -143,7 +164,7 @@ export async function collectCatalogOffers(
   if (buyBox.state === 'not_verified') warnings.push('No se pudo verificar el buy-box del catálogo.')
   if (offers.some(offer => offer.detailsError || !offer.sellerName)) warnings.push('Hay ofertas con detalles o vendedor no disponibles.')
   if (offers.some(offer => !positive(offer.observation.normalizedAmount))) warnings.push('Hay ofertas sin precio o conversión válida a UYU.')
-  const coverage = total == null ? 'unknown' : exhausted && found.size === total ? 'complete' : 'partial'
+  const coverage = pageFailed ? 'partial' : total == null ? 'unknown' : exhausted && found.size === total ? 'complete' : 'partial'
   if (coverage !== 'complete') warnings.push('La cobertura de ofertas es parcial o desconocida.')
   return { snapshot: { catalogId, offers, total, coverage, observedAt: now, fx: context.fx, buyBox, warnings }, competitions }
 }

@@ -147,7 +147,7 @@ export default function AddMonitorTarget<T>({
                 checked={mode === 'catalog'}
                 onChange={() => setMode('catalog')}
               />{' '}
-              {userProduct?'Producto del vendedor: seguir este User Product y verificar su MLU':'Catálogo dinámico: el vendedor y la MLU pueden cambiar'}
+              {userProduct?'Producto del vendedor: seguir su menor precio observado':'Catálogo dinámico: el vendedor y la MLU pueden cambiar'}
             </label>
             <label className="mt-2 block text-sm">
               <input
@@ -160,7 +160,7 @@ export default function AddMonitorTarget<T>({
             </label>
           </fieldset>
         )}
-        {userProduct&&<label className="block text-sm">MLU candidata (opcional, si la API no puede resolver el producto)
+        {userProduct&&mode==='item'&&<label className="block text-sm">MLU candidata (opcional, si la API no puede resolver el producto)
           <input value={candidate} onChange={e=>setCandidate(e.target.value)} placeholder="MLU…" className="mt-1 block w-full rounded-lg border border-slate-300 p-2.5"/>
           <span className="text-xs text-slate-500">Se verificará que pertenezca al mismo producto y vendedor antes de guardar.</span>
         </label>}
@@ -243,7 +243,7 @@ export default function AddMonitorTarget<T>({
                 <p className="mt-2">
                   {validPreview.observed.title ?? 'Sin título'} ·{' '}
                   {validPreview.observed.target.kind === 'catalog'
-                    ? 'Catálogo dinámico'
+                    ? (userProduct ? 'Producto del vendedor' : 'Catálogo dinámico')
                     : 'MLU fija'}
                   : {validPreview.observed.target.id}
                 </p>
@@ -252,7 +252,7 @@ export default function AddMonitorTarget<T>({
                   {validPreview.observed.observation.sellerName ?? 'Sin dato'} ·
                   MLU:{' '}
                   {validPreview.observed.observation.itemId ??
-                    'Sin oferta rival'}
+                    'Publicación no identificada'}
                 </p>
                 <p>
                   {validPreview.observed.observation.state ===

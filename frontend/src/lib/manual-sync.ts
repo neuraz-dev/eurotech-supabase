@@ -39,7 +39,7 @@ export type ManualSyncResult = {
     sku?: string
     seller?: string
     url?: string
-    itemId?: string
+    itemId?: string | null
     sourceId?: string
   }
   outcome: 'updated' | 'failed' | 'skipped' | 'warning'

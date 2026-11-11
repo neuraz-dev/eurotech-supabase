@@ -26,7 +26,7 @@ test('sync queries only catalogs, reuses offers, and preserves failed sources wi
     if (url.endsWith('/fx')) return Response.json({ rates: { UYU: 40 } })
     if (url.includes('/items?ids=')) return Response.json([])
     if (url.includes('/users/')) return Response.json({id:Number(url.split('/').pop()),nickname:'Vendedor'})
-    if (url.includes('MLU404')) return new Response(null, { status: 404 })
+    if (url.includes('MLU404')) return new Response(null, { status: 403 })
     return Response.json({ results: [
       { item_id: 'MLU1', seller_id: 1, price: 100, currency_id: 'UYU' },
       { item_id: 'MLU90', seller_id: 2, price: 90, currency_id: 'UYU' },
@@ -39,5 +39,5 @@ test('sync queries only catalogs, reuses offers, and preserves failed sources wi
   assert.equal(calls.filter(url => url.includes('/products/MLU100/')).length, 1)
   assert.equal(calls.some(url => url.includes('MLUU300')), false)
   assert.deepEqual(writes.sort(), ['MLU1', 'MLU2'])
-  assert.deepEqual(result.errors, [{ itemId: 'MLU4', catalogId: 'MLU404', message: 'Catálogo HTTP 404' }])
+  assert.deepEqual(result.errors, [{ itemId: 'MLU4', catalogId: 'MLU404', message: 'Catálogo HTTP 403' }])
 })

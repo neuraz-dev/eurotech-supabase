@@ -20,13 +20,18 @@ function Observation({label,value,zone}:{label:string;value:unknown;zone:string}
     <p>Consulta: {typeof data.observedAt==='string'?new Date(data.observedAt).toLocaleString('es-UY',{timeZone:zone}):'Sin fecha'}</p>
     {fx&&<p>Cotización: {String(fx.rate)} · {String(fx.source)} · {typeof fx.fetchedAt==='string'?new Date(fx.fetchedAt).toLocaleString('es-UY',{timeZone:zone}):'Sin fecha'}</p>}
     {data.sellerName!=null&&<p>Vendedor: {String(data.sellerName)}</p>}
-    {data.itemId!=null&&<p>MLU observada: {String(data.itemId)}</p>}
+    {data.itemId!=null?<p>MLU observada: {String(data.itemId)}</p>:data.sourceKind==='user_product'?<p>Publicación no identificada</p>:null}
+    {Array.isArray(data.warnings)&&data.warnings.map((warning,i)=><p key={i} className="text-amber-800">{String(warning)}</p>)}
+    {data.state==='no_external_offers'&&<p>Sin ofertas observadas</p>}
+    {data.lastPricedObservation!=null&&typeof data.lastPricedObservation==='object'&&<Observation label="Último precio observado (histórico)" value={data.lastPricedObservation} zone={zone}/>}
+    {data.availabilityEvidence!=null&&<p>Consulta de ofertas: HTTP 404 · No winners found</p>}
     {data.offersConsulted!=null&&<p>Ofertas consultadas: {String(data.offersConsulted)} de {String(data.offersTotal??'total desconocido')} · Cobertura: {data.coverage==='complete'?'Completa':data.coverage==='partial'?'Parcial':'Desconocida'}</p>}
   </div>
 }
 function ProductEvidence({value}:{value:unknown}){
   if(!value||typeof value!=='object')return null
   const p=value as Record<string,unknown>
+  const observation=p.observation as {state?:string}|null
   const attrs=Array.isArray(p.attributes)?p.attributes.filter(a=>a&&typeof a==='object') as {name?:string;id?:string;value_name?:string}[]:[]
   const states:Record<string,string>={active:'Activa',paused:'Pausada',closed:'Cerrada',inactive:'Inactiva',under_review:'En revisión'}
   const conditions:Record<string,string>={new:'Nuevo',used:'Usado',not_specified:'Sin especificar'}
@@ -37,7 +42,7 @@ function ProductEvidence({value}:{value:unknown}){
   return <div className="space-y-1 rounded-lg bg-slate-50 p-3 text-sm">
     <p className="font-semibold">{String(p.title??p.id??'Producto')}</p>
     <p>MLU: {String(p.id??'Sin identificación')} · Estado: {states[String(p.status)]??'Sin dato fiable'} · Condición: {conditions[String(p.condition)]??'Sin dato fiable'}</p>
-    {p.availability!=null&&<p>Disponibilidad: {p.availability==='unavailable'?'No disponible confirmada':p.availability==='available'?'Disponible en la consulta':'Sin confirmar'}</p>}
+    {p.availability!=null&&<p>Disponibilidad: {observation?.state==='no_external_offers'?'Sin ofertas observadas':p.availability==='unavailable'?'No disponible confirmada':p.availability==='available'?'Disponible en la consulta':'Sin confirmar'}</p>}
     <p>Disponibles: {String(p.available_quantity??'Sin dato')} · Vendidos: {String(p.sold_quantity??'Sin dato')}</p>
     {p.catalog_competition!==undefined&&<p>Adjudicación: {competition?.source==='price_to_win'&&competition.itemId===p.id&&competition.observedAt?`${competitionStates[String(competition.state)]??'No verificado'} · ${String(competition.observedAt)}`:'No verificado'}</p>}
     {!!attrs.length&&<dl className="grid grid-cols-2 gap-x-3">{attrs.map((a,i)=><div key={i}><dt className="text-slate-500">{a.name??a.id}</dt><dd>{a.value_name??'Sin dato'}</dd></div>)}</dl>}
@@ -83,7 +88,7 @@ export default function AlertEventModal({id,zone,onClose}:{id:string;zone:string
                     <svg aria-hidden="true" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M15 3h6v6M10 14 21 3M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5"/></svg>
                   </a>}
                 </div>
-                <p className="text-xs text-slate-500">{row.mlu??'Sin MLU registrada'}{row.sellerName?` · ${row.sellerName}`:''}</p>
+                <p className="text-xs text-slate-500">{row.mlu??'Publicación no identificada'}{row.sellerName?` · ${row.sellerName}`:''}</p>
                 {(row.sources?.length??0)>1&&<p className="mt-1 text-xs text-slate-500">Procedencias: {row.sources!.map(s=>s.mode==='catalog'?'Seguimiento dinámico':'Publicación fija').filter((s,i,a)=>a.indexOf(s)===i).join(' · ')}</p>}
                 <div className="mt-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
                   <p className="text-2xl font-bold">{money(row.price)}</p>

@@ -113,3 +113,34 @@ test('a failed refresh preserves a partial snapshot and reports shared buy-box e
   await expect(board.getByRole('heading',{name:'Buy-box · Primer lugar compartido',exact:true})).toBeVisible()
   await expect(board.getByRole('listitem')).toHaveCount(5)
 })
+
+for(const kind of ['no_offers','inactive_parent','catalog_not_found'] as const)test(`catalog diagnosis ${kind} separates history from the current ranking`,async({page,request})=>{
+  const product=(await products(request)).find(p=>p.catalog_listing&&p.catalog_product_id)!
+  const original=await(await request.get(`/api/product-panel/${product.id}`)).json()
+  const previous=snapshot(product),saved=snapshot(product)
+  saved.offers=[];saved.total=kind==='no_offers'?0:null;saved.coverage=kind==='no_offers'?'complete':'unknown'
+  saved.buyBox={state:'not_verified',winnerId:null,winner:null,observedAt:null,sourceItemId:null,source:'price_to_win'}
+  saved.lastPricedSnapshot=previous
+  saved.lastRecordedPrices=[{publicationId:product.id,amount:77,currency:null,observedAt:null,source:'stored_record'}]
+  saved.diagnosis={kind,message:kind==='no_offers'?'Sin ofertas de catálogo observadas':kind==='inactive_parent'?'Catálogo padre inactivo; asociación por revisar':'Catálogo no encontrado; asociación por revisar',catalogStatus:kind==='catalog_not_found'?null:kind==='inactive_parent'?'inactive':'active',childrenIds:kind==='inactive_parent'?['MLU123']:[],observedAt:saved.observedAt,
+    evidence:{httpStatus:404,resource:`/products/${product.catalog_product_id}/items`,metadataResource:`/products/${product.catalog_product_id}`,metadataHttpStatus:kind==='catalog_not_found'?404:200,apiCode:'not_found',message:'No winners found'},
+    publications:{[product.id]:{status:'paused',subStatus:['out_of_stock'],message:'Sin stock',observedAt:saved.observedAt,resource:`/items/bulk?ids=${product.id}`,httpStatus:200}}}
+  await page.route(`**/api/product-panel/${product.id}`,route=>route.fulfill({json:{...original,catalog:{status:'ready',catalogId:product.catalog_product_id,snapshot:saved,lastAttemptAt:saved.observedAt,lastError:null}}}))
+  await open(page,product.id)
+  const board=page.getByRole('region',{name:'Ofertas del catálogo'})
+  await expect(board.getByRole('status')).toContainText(saved.diagnosis.message)
+  await expect(board.getByRole('status')).toContainText('Publicación propia: Sin stock')
+  await expect(board.getByRole('alert')).toHaveCount(0)
+  await expect(board.getByRole('list',{name:'Ofertas activas por precio de menor a mayor'})).toHaveCount(0)
+  await expect(board.getByText('Oferta menor',{exact:false})).toBeHidden()
+  const summary=board.getByText(/Última información con precios \(histórica\)/)
+  await summary.focus();await page.keyboard.press('Enter')
+  await expect(board.getByText('Oferta menor',{exact:false})).toBeVisible()
+  await expect(board).toContainText('Estos precios no forman parte de la comparación actual')
+  await board.getByText('Valores anteriores registrados (históricos)',{exact:true}).click()
+  await expect(board.getByText(/moneda no registrada/)).toBeVisible()
+  await expect(board.getByText(/Fecha de consulta no registrada/)).toBeVisible()
+  await page.setViewportSize({width:390,height:844})
+  await expect(board.getByRole('status')).toBeVisible()
+  if(kind==='inactive_parent')await page.screenshot({path:'/tmp/monitor-catalog-diagnosis.png',fullPage:false})
+})

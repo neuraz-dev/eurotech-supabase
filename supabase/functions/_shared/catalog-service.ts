@@ -11,7 +11,7 @@ export async function syncCatalog(
   reporting: SyncReporting = {},
 ) {
   const allProducts = await allRows<CatalogProduct>(client, 'ml_products',
-    'id,catalog_product_id,catalog_listing,site_id,title,sku,permalink')
+    'id,catalog_product_id,catalog_listing,site_id,title,sku,permalink,catalog_price,catalog_currency_id,catalog_observed_at')
   const products = reporting.ids ? allProducts.filter(product => reporting.ids!.includes(product.id)) : allProducts
   const fx = await fetchFx(context.fetcher, context.fxUrl)
   let updated = 0, failed = 0, skipped = 0
@@ -24,6 +24,21 @@ export async function syncCatalog(
         try {
           const result = await collectCatalogOffers(catalogId,
             allProducts.filter(product => product.catalog_product_id === catalogId), { ...context, fx })
+          if(result.snapshot.diagnosis){
+            const previous = await client.schema('ml').from('ml_catalog_snapshots').select('snapshot').eq('catalog_product_id',catalogId).maybeSingle()
+            if(previous.error)throw new Error('No se pudo leer el historial del catálogo')
+            const old = previous.data?.snapshot as typeof result.snapshot | undefined
+            const recorded = new Map((old?.lastRecordedPrices ?? []).map(price => [price.publicationId,price]))
+            for(const product of allProducts.filter(p=>p.catalog_product_id===catalogId))if(positive(product.catalog_price)){
+              recorded.set(product.id,{publicationId:product.id,amount:product.catalog_price,
+                currency:product.catalog_currency_id??null,observedAt:product.catalog_observed_at??null,source:'stored_record'})
+            }
+            if(recorded.size)result.snapshot.lastRecordedPrices=[...recorded.values()]
+            if(old?.offers?.length){
+              const {lastPricedSnapshot: _last, ...priced} = old
+              result.snapshot.lastPricedSnapshot = priced
+            }else if(old?.lastPricedSnapshot)result.snapshot.lastPricedSnapshot=old.lastPricedSnapshot
+          }
           const saved = await client.schema('ml').rpc('record_catalog_snapshot', {
             p_catalog: catalogId, p_snapshot: result.snapshot, p_error: null,
           })
@@ -75,7 +90,13 @@ export async function syncCatalog(
       }).eq('id', product.id).select('id').single()
       if (error) throw new Error(`No se pudo guardar la publicación: ${error.message}`)
       updated++
-      reporting.report?.({ entity_id: product.id, identity: identityOf(product), outcome: snapshot.warnings.length ? 'warning' : 'updated', message: snapshot.warnings.join(' ') || 'Ofertas y precio de catálogo guardados.', operation: 'catálogo', resource: `/products/${catalogId}/items` })
+      const diagnosis = snapshot.diagnosis
+      const publication = diagnosis?.publications[product.id]
+      const diagnosticWarning = diagnosis && (diagnosis.kind !== 'no_offers' || !!publication?.warning)
+      reporting.report?.({ entity_id: product.id, identity: identityOf(product), outcome: diagnosticWarning || snapshot.warnings.length ? 'warning' : 'updated',
+        message: diagnosis ? `${diagnosis.message} · Publicación propia: ${publication?.message ?? 'Estado no verificable'}${publication?.warning?` · ${publication.warning}`:''}` : snapshot.warnings.join(' ') || 'Ofertas y precio de catálogo guardados.',
+        operation:'catálogo',resource:diagnosis?.evidence.resource ?? `/products/${catalogId}/items`,
+        ...(diagnosis?{category:diagnosis.kind==='no_offers'?'availability':'resolution',http_status:diagnosis.evidence.httpStatus}:{}), })
     } catch (error) {
       failed++
       reporting.report?.({ entity_id: product.id, identity: identityOf(product), outcome: 'failed', ...syncFailure(error, 'catálogo') })

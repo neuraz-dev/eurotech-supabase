@@ -4,6 +4,8 @@ import { buildAlertEvents } from './alert-events.ts'
 import { MlHttpError } from './ml-observation.ts'
 import {recoverPendingFixedTargets,isConfirmedSource404} from './source-recovery.ts'
 import {
+  retainLastPricedObservation,
+  observe, positive,
   type CompetitorLink,
   type OwnProduct,
   type PriceObservation,
@@ -105,6 +107,10 @@ export async function syncCompetitors(
             { kind: rival.target_kind, id: rival.id,sourceKind:rival.source_kind,sourceId:rival.source_id,sourceUrl:rival.source_url??rival.permalink,itemId:rival.observation?.itemId,sellerId:rival.observation?.sellerId??rival.seller_id,catalogId:rival.observation?.catalogProductId },
             { ...context, fx },
           )
+          value.title ??= rival.title
+          value.thumbnail ??= rival.thumbnail
+          if(value.observation.sellerId === (rival.observation?.sellerId ?? rival.seller_id))
+            value.observation.sellerName ??= rival.observation?.sellerName ?? rival.seller_name
           const availability = value.status !== 'active' || value.available_quantity === 0
             || value.observation.state === 'no_external_offers'
             || !(Number(value.observation.amount) > 0) ? 'unavailable' : 'available'
@@ -114,6 +120,11 @@ export async function syncCompetitors(
           let baseline = rival
           let committed = false
           for (let attempt = 0; attempt < 3; attempt++) {
+            const previous = baseline.observation ?? (positive(baseline.price) ? {
+              ...observe(baseline.price,baseline.currency_id,baseline.synced_at,'legacy_record'),
+              sellerId:baseline.seller_id,sellerName:baseline.seller_name,
+            } : null)
+            value.observation = retainLastPricedObservation(value.observation,previous)
             const events = buildAlertEvents(
               { ...value, id:rival.id, target_kind:rival.target_kind, availability },
               baseline.observation, products, allRivals, links, rules, fx,
@@ -121,7 +132,7 @@ export async function syncCompetitors(
             const { data, error } = await client.schema('ml').rpc('record_monitor_observation', {
               p_id:rival.id, p_expected:baseline.observation_revision ?? 0,
               p_update:{...competitorRecord(value),availability,
-                previous_price:baseline.observation?.normalizedAmount ?? null,last_attempt_at:attemptedAt},
+                previous_price:baseline.observation?.normalizedAmount ?? value.observation.lastPricedObservation?.normalizedAmount ?? null,last_attempt_at:attemptedAt},
               p_events:events,
             })
             if(error){ stats.alert_errors++; throw new Error(`No se pudo persistir observación y eventos: ${error.message}`) }
@@ -133,8 +144,10 @@ export async function syncCompetitors(
             if(!data?.conflict){
               if(!data?.obsolete){stats.items_updated++;persisted=true}else obsolete=true
               stats.alerts_fired+=Number(data?.alerts ?? 0)
-              const repair=await client.schema('ml').rpc('repair_verified_source_archives',{p_rival:rival.id})
-              if(repair.error)repairWarning=true
+              if(value.target.sourceKind !== 'user_product' && value.observation.state !== 'no_external_offers'){
+                const repair=await client.schema('ml').rpc('repair_verified_source_archives',{p_rival:rival.id})
+                if(repair.error)repairWarning=true
+              }
               committed=true;break
             }
             const latest=await client.schema('ml').from('ml_competitor_items').select('*').eq('id',rival.id).single()
@@ -142,8 +155,11 @@ export async function syncCompetitors(
             baseline=latest.data as RivalRecord
           }
           if(!committed)throw new Error('Observación concurrente; reintentar la sincronización')
+          const noOffers = value.observation.state === 'no_external_offers'
+          const evidence = value.observation.availabilityEvidence
+          const offerWarnings = value.observation.warnings ?? []
           const conversionMissing = value.observation.amount != null && value.observation.normalizedAmount == null
-          reporting.report?.({entity_id:rival.id,identity:{...identityOf(rival),title:value.title ?? rival.title,seller:value.observation.sellerName ?? rival.seller_name,itemId:value.observation.itemId,url:value.permalink},outcome:obsolete?'skipped':conversionMissing||repairWarning?'warning':'updated',message:repairWarning?'Observación guardada; no se pudo completar la revisión de archivos.':obsolete?'Otra consulta más reciente ya está guardada.':conversionMissing?'Observación guardada; no hay conversión válida para comparar.':persisted?'Observación y eventos guardados.':'Consulta completada.',operation:'rivales'})
+          reporting.report?.({entity_id:rival.id,identity:{...identityOf(rival),title:value.title ?? rival.title,seller:value.observation.sellerName,itemId:value.observation.itemId,url:value.permalink},outcome:obsolete?'skipped':conversionMissing||repairWarning||offerWarnings.length?'warning':'updated',message:repairWarning?'Observación guardada; no se pudo completar la revisión de archivos.':obsolete?'Otra consulta más reciente ya está guardada.':conversionMissing?'Observación guardada; no hay conversión válida para comparar.':offerWarnings.length?offerWarnings.join(' '):noOffers?`Actualizado · Sin ofertas observadas${evidence?' · No winners found':''}`:persisted?'Observación y eventos guardados.':'Consulta completada.',operation:'rivales',resource:evidence?.resource ?? value.observation.resolution?.resource,http_status:evidence?.httpStatus,...(noOffers?{category:'availability'}:{})})
         } catch (error) {
           stats.items_failed++
           const failure = syncFailure(error,'rivales')
@@ -304,7 +320,7 @@ export async function syncTracked(
         .select('id')
         .single()
       if (error) throw new Error(`No se pudo guardar el seguimiento: ${error.message}`)
-      reporting.report?.({entity_id:item.id,identity:{...identityOf(item),title:value.title ?? item.title,seller:value.observation.sellerName,itemId:value.observation.itemId,url:value.permalink},outcome:value.observation.amount != null && value.observation.normalizedAmount == null?'warning':'updated',message:value.observation.amount != null && value.observation.normalizedAmount == null?'Consulta guardada sin conversión válida.':changed?'Consulta y cambio guardados.':'Consulta guardada; sin cambios.',operation:'seguimiento'})
+      reporting.report?.({entity_id:item.id,identity:{...identityOf(item),title:value.title ?? item.title,seller:value.observation.sellerName,itemId:value.observation.itemId,url:value.permalink},outcome:(value.observation.warnings?.length || value.observation.amount != null && value.observation.normalizedAmount == null)?'warning':'updated',message:value.observation.warnings?.length?value.observation.warnings.join(' '):value.observation.amount != null && value.observation.normalizedAmount == null?'Consulta guardada sin conversión válida.':changed?'Consulta y cambio guardados.':'Consulta guardada; sin cambios.',operation:'seguimiento'})
     } catch (error) {
       failed++
       reporting.report?.({entity_id:item.id,identity:identityOf(item),outcome:'failed',...syncFailure(error,'seguimiento')})

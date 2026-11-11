@@ -21,6 +21,9 @@ export type PriceObservation = {
   offersConsulted?: number
   offersTotal?: number | null
   coverage?: 'partial' | 'complete' | 'unknown'
+  warnings?: string[]
+  availabilityEvidence?: {httpStatus:404;apiCode:'not_found';message:'No winners found';resource:string;observedAt:string}
+  lastPricedObservation?: Omit<PriceObservation,'lastPricedObservation'>
   state?: 'observed' | 'no_external_offers'
   condition?: string | null
   catalogProductId?:string|null
@@ -101,7 +104,7 @@ export const QUALITY_LABELS: Record<ComparisonStatus, string> = {
   review: 'Equivalencia por revisar',
   paused: 'Comparación suspendida',
   inactive: 'Rival inactivo',
-  no_external_offers: 'Sin ofertas rivales observadas',
+  no_external_offers: 'Sin ofertas observadas',
 }
 export function normalizeSku(value: string | null | undefined): string | null {
   return typeof value === 'string' ? value.trim().toLowerCase() || null : null
@@ -224,7 +227,7 @@ export function compare(
   const reasons: ComparisonStatus[] = []
   if (!applicable.length || !enabled.length) reasons.push('paused')
   else if (!accepted.length) reasons.push('review')
-  if (rival.availability === 'unavailable' || (rival.status && rival.status !== 'active')) reasons.push('inactive')
+  if (observation?.state !== 'no_external_offers' && (rival.availability === 'unavailable' || (rival.status && rival.status !== 'active'))) reasons.push('inactive')
   if (observation?.state === 'no_external_offers')
     reasons.push('no_external_offers')
   if (!positive(own.amount) || !positive(observation?.amount))
@@ -306,4 +309,12 @@ export function ruleFires(
     default:
       return false
   }
+}
+
+/** Keep historical evidence separate from a current, non-comparable observation. */
+export function retainLastPricedObservation(current: PriceObservation, previous: PriceObservation | null): PriceObservation {
+  if(current.state !== 'no_external_offers' || !previous) return current
+  const {lastPricedObservation, ...priced} = previous
+  const last = positive(previous.amount) ? priced : lastPricedObservation
+  return last ? {...current,lastPricedObservation:last} : current
 }

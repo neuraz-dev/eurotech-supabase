@@ -20,6 +20,9 @@ export default function CatalogBoard({ product, data, loading, error, onRetry, o
 }) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const snapshot = data?.snapshot
+  const diagnosis = snapshot?.diagnosis
+  const publication = diagnosis?.publications[product.id]
+  const historical = snapshot?.lastPricedSnapshot
   const buyBox = snapshot?.buyBox
   const winner = buyBox?.winner
   const rows = snapshot ? catalogRanking(snapshot, product.id) : []
@@ -38,6 +41,24 @@ export default function CatalogBoard({ product, data, loading, error, onRetry, o
     {!loading && !snapshot && !error && <p className="rounded-xl border border-slate-200 p-4 text-sm text-slate-600">
       {product.catalog_product_id ? 'Catálogo pendiente de actualización. Usá «Actualizar catálogo» para consultar sus ofertas activas.' : 'Esta publicación no tiene un catálogo identificado.'}
     </p>}
+    {diagnosis&&<div role="status" className={`space-y-2 rounded-xl border p-3 text-sm ${diagnosis.kind==='no_offers'&&!publication?.warning?'border-slate-200 bg-slate-50':'border-amber-200 bg-amber-50 text-amber-900'}`}>
+      <p className="font-semibold">{diagnosis.message}</p>
+      <p>Publicación propia: {publication?.message??'Estado no verificable'}</p>
+      {publication?.warning&&<p>{publication.warning}</p>}
+      {!!diagnosis.childrenIds.length&&<p className="break-words text-xs">Productos hijos informados: {diagnosis.childrenIds.join(', ')}. Revisá la asociación de esta publicación.</p>}
+      <p className="text-xs">Verificación: {date(diagnosis.observedAt)} · Ofertas HTTP {diagnosis.evidence.httpStatus} {diagnosis.evidence.message?`· ${diagnosis.evidence.message}`:''} · Catálogo HTTP {diagnosis.evidence.metadataHttpStatus}</p>
+      {publication&&<p className="text-xs">Estado propio consultado: {date(publication.observedAt)} · HTTP {publication.httpStatus??'sin respuesta'}</p>}
+    </div>}
+    {historical&&<details className="rounded-xl border border-slate-200 p-3 text-sm text-slate-600">
+      <summary className="cursor-pointer font-semibold">Última información con precios (histórica) · {date(historical.observedAt)}</summary>
+      <p className="mt-2 text-xs">Estos precios no forman parte de la comparación actual.</p>
+      <ul className="mt-2 space-y-1">{historical.offers.map(offer=><li key={offer.itemId}>{offer.title??offer.itemId} · {offer.sellerName??'Vendedor sin identificar'} · {money(offer.observation.amount,offer.observation.currency)}</li>)}</ul>
+    </details>}
+    {!!snapshot?.lastRecordedPrices?.length&&<details className="rounded-xl border border-slate-200 p-3 text-sm text-slate-600">
+      <summary className="cursor-pointer font-semibold">Valores anteriores registrados (históricos)</summary>
+      <p className="mt-2 text-xs">Importes conservados del registro anterior; no representan ofertas actuales verificadas.</p>
+      <ul className="mt-2 space-y-1">{snapshot.lastRecordedPrices.map(value=><li key={value.publicationId}>{value.publicationId} · {value.currency?money(value.amount,value.currency):`${value.amount.toLocaleString('es-UY')} · moneda no registrada`} · {value.observedAt?date(value.observedAt):'Fecha de consulta no registrada'}</li>)}</ul>
+    </details>}
     {snapshot && <>
       <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
         <div className="flex items-start justify-between gap-3">
@@ -54,7 +75,7 @@ export default function CatalogBoard({ product, data, loading, error, onRetry, o
         </div>
       </div>
       <div className="space-y-1 text-xs text-slate-500">
-        <p>{snapshot.coverage === 'complete' ? `${rows.length} ofertas activas · Cobertura completa` : `${rows.length} ofertas consultadas de ${snapshot.total ?? 'total desconocido'} · Cobertura ${snapshot.coverage === 'partial' ? 'parcial' : 'desconocida'}`}</p>
+        <p>{diagnosis&&diagnosis.kind!=='no_offers'?'Sin cobertura de ofertas verificable':snapshot.coverage === 'complete' ? `${rows.length} ofertas activas · Cobertura completa` : `${rows.length} ofertas consultadas de ${snapshot.total ?? 'total desconocido'} · Cobertura ${snapshot.coverage === 'partial' ? 'parcial' : 'desconocida'}`}</p>
         <p>Consulta: {date(snapshot.observedAt)} · Posición por precio</p>
         {snapshot.warnings.map(warning => <p key={warning} className="text-amber-800">{warning}</p>)}
       </div>

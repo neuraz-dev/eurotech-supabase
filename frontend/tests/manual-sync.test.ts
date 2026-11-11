@@ -41,7 +41,7 @@ const adapter: OwnAdapter = {
     })),
   }),
 }
-test('every failed catalog target is reported beyond the former 20-error cap', async () => {
+test('every technical catalog failure is reported beyond the former 20-error cap', async () => {
   const products = Array.from(
     { length: 49 },
     (_, i) => ({
@@ -60,13 +60,13 @@ test('every failed catalog target is reported beyond the former 20-error cap', a
     fetcher: async (input) =>
       String(input).includes('fx.test')
         ? Response.json({ rates: { UYU: 40 } })
-        : new Response(null, { status: 404 }),
+        : new Response(null, { status: 503 }),
   }, { report: (r) => reported.push(r) })
   assert.equal(result.items_failed, 49)
   assert.equal(result.errors.length, 49)
   assert.equal(reported.length, 49)
   assert.equal(reported[48].identity.title, 'Producto 48')
-  assert.equal(reported[48].http_status, 404)
+  assert.equal(reported[48].http_status, 503)
 })
 test('a batch preserves names, SKU and identifiers from discovery after source removal', async () => {
   const client = database(async () => Response.json(null))

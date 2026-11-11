@@ -16,7 +16,7 @@
     "test:e2e": "playwright test",
     "test:events-ui": "playwright test --config playwright.events.config.ts",
     "test:manual-sync": "node --experimental-strip-types --test tests/manual-sync.test.ts tests/monitor-sync-flow.test.ts",
-    "test:catalog": "node --experimental-strip-types --test tests/catalog-offers.test.ts tests/catalog-sync.test.ts",
+    "test:catalog": "node --experimental-strip-types --test tests/catalog-offers.test.ts tests/catalog-sync.test.ts tests/catalog-diagnosis.test.ts",
     "test:pagination": "node --experimental-strip-types tests/pagination.test.ts"
   },
   "dependencies": {

@@ -17,7 +17,18 @@ export type CatalogBuyBox = {
   sourceItemId: string | null
   source: 'price_to_win'
 }
+export type CatalogPublicationEvidence = {status:string|null;subStatus:string[];message:string;observedAt:string;resource:string;httpStatus:number|null;warning?:string}
+export type CatalogDiagnosis = {
+  kind:'no_offers'|'inactive_parent'|'inactive_catalog'|'catalog_not_found'|'unverified'
+  message:string;catalogStatus:string|null;childrenIds:string[];observedAt:string
+  publications:Record<string,CatalogPublicationEvidence>
+  evidence:{httpStatus:number;resource:string;apiCode?:string;message?:string;metadataResource:string;metadataHttpStatus:number}
+}
+export type CatalogRecordedPrice = {publicationId:string;amount:number;currency:string|null;observedAt:string|null;source:'stored_record'|'local_backup';backup?:string}
 export type CatalogSnapshot = {
+  lastRecordedPrices?: CatalogRecordedPrice[]
+  diagnosis?: CatalogDiagnosis
+  lastPricedSnapshot?: Omit<CatalogSnapshot,'lastPricedSnapshot'>
   catalogId: string
   offers: CatalogOffer[]
   total: number | null
@@ -36,6 +47,7 @@ export type CatalogPanel = {
 }
 
 export function catalogRanking(snapshot: CatalogSnapshot, ownId: string) {
+  if(snapshot.diagnosis)return []
   const reference = snapshot.offers.find(offer => offer.itemId === ownId)?.observation.normalizedAmount
   const prices = snapshot.offers.map(offer => offer.observation.normalizedAmount).filter(positive)
   return snapshot.offers.map(offer => {

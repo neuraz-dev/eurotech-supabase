@@ -283,10 +283,10 @@ export default function ComparisonBoard({
                   <h3 className="text-sm font-semibold">{rival.title ?? rival.id}</h3>
                   <MarketplaceButton url={o?.itemPermalink ?? rival.permalink ?? rival.source_url} title={rival.title ?? rival.id} />
                 </div>
-                <p className="mt-1 text-xs text-slate-500">{o?.itemId ?? rival.id} · {o?.sellerName ?? rival.seller_name ?? 'Vendedor sin identificar'}</p>
+                <p className="mt-1 text-xs text-slate-500">{o?.itemId ?? 'Publicación no identificada'} · {o?.sellerName ?? rival.seller_name ?? 'Vendedor sin identificar'}</p>
                 <div className="mt-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
                   <p className="text-2xl font-bold tabular-nums">
-                    {money(
+                    {o?.state === 'no_external_offers' ? 'Sin ofertas observadas' : money(
                       o?.normalizedAmount ?? o?.amount ?? null,
                       o?.normalizedCurrency ?? o?.currency ?? null,
                     )}
@@ -299,6 +299,8 @@ export default function ComparisonBoard({
                   {expanded[rival.id] ? 'cerrar detalles' : 'ver detalles'}
                 </button>
                 <div id={`rival-details-${rival.id}`} hidden={!expanded[rival.id]} className="mt-3 space-y-1 border-t border-slate-100 pt-3">
+                  {o?.lastPricedObservation&&<p className="text-xs text-slate-500">Último precio observado (histórico): {money(o.lastPricedObservation.amount,o.lastPricedObservation.currency)} · {o.lastPricedObservation.observedAt?consultationDate(o.lastPricedObservation.observedAt):'Sin fecha'}</p>}
+                  {o?.availabilityEvidence&&<p className="text-xs text-slate-500">Consulta de ofertas: HTTP {o.availabilityEvidence.httpStatus} · {o.availabilityEvidence.message}</p>}
                   <p className="text-xs text-slate-500">{rival.target_kind === 'catalog' ? (rival.source_kind === 'user_product' ? 'Producto del vendedor · Seguimiento dinámico' : 'Catálogo dinámico · Menor precio observado') : 'Publicación fija'} · {rival.id}</p>
             {result.reasons.includes('incompatible_fx') && (
               <p className="text-xs text-amber-800">
@@ -315,7 +317,7 @@ export default function ComparisonBoard({
             )}
             <p className="mt-1 text-xs text-slate-500">
               {o?.sellerName ?? rival.seller_name ?? 'Vendedor sin identificar'}{' '}
-              · MLU observada: {o?.itemId ?? '—'} ·{' '}
+              · MLU observada: {o?.itemId ?? 'Publicación no identificada'} ·{' '}
               {o?.observedAt
                 ? consultationDate(o.observedAt)
                 : 'Sin consulta exitosa'}

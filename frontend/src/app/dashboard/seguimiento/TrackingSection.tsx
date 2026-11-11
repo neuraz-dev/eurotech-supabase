@@ -545,7 +545,7 @@ function HistoryPanel({
                         {formatDate(snap.scraped_at)}
                         <p>
                           {snap.seller_name ?? 'Vendedor sin dato'} ·{' '}
-                          {snap.selected_item_id ?? 'MLU sin resolver'}
+                          {snap.selected_item_id ?? 'Publicación no identificada'}
                         </p>
                       </td>
                       <td className="px-4 py-2.5 text-right whitespace-nowrap">

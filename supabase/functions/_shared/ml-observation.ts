@@ -10,7 +10,8 @@ import {catalogOfferUrl,safeMarketplaceUrl,sourceIdentity} from './source-links.
 export class MlHttpError extends Error {
   status:number
   resource:string
-  constructor(status:number,resource='') { super(`Mercado Libre HTTP ${status}`); this.status=status;this.resource=resource }
+  noWinners:boolean
+  constructor(status:number,resource='',noWinners=false) { super(`Mercado Libre HTTP ${status}`); this.status=status;this.resource=resource;this.noWinners=noWinners }
 }
 
 type MlData = Record<string, unknown>
@@ -103,8 +104,22 @@ export async function fetchTarget(
       headers,
       signal: AbortSignal.timeout(20_000),
     })
-    if (!response.ok) throw new MlHttpError(response.status,path)
+    if (!response.ok) {
+      // Retain only the recognized business signal, never an external error body.
+      const error = response.status === 404 ? await response.json().catch(() => null) : null
+      throw new MlHttpError(response.status,path,
+        error?.error === 'not_found' && error?.message === 'No winners found')
+    }
     return (await response.json()) as MlData
+  }
+  let noOfferEvidence: PriceObservation['availabilityEvidence']
+  const getOffers = async (path: string, firstPage: boolean): Promise<MlData> => {
+    try { return await get(path) } catch (error) {
+      if (!firstPage || !(error instanceof MlHttpError) || !error.noWinners) throw error
+      noOfferEvidence = {httpStatus:404,apiCode:'not_found',message:'No winners found',
+        resource:path,observedAt:context.now ?? new Date().toISOString()}
+      return {results:[],paging:{total:0}}
+    }
   }
   let now = context.now ?? ''
   let body: MlData
@@ -112,43 +127,64 @@ export async function fetchTarget(
   let metadata: MlData = {}
   let resource=''
   if(source.kind==='user_product'){
-    // A /up/ page is a seller's User Product, not a catalog product.
-    // Never pass its MLUU identifier to /products.
-    const candidates=new Set<string>()
-    if(target.itemId)candidates.add(target.itemId)
-    if(target.sourceUrl){try{const wid=new URL(target.sourceUrl).searchParams.get('wid');if(wid)candidates.add(wid)}catch{/* invalid URL is not identity evidence */}}
-    let selected:MlData|undefined
-    const matches=(row:MlData)=>row.user_product_id===source.id&&typeof row.id==='string'
-      &&row.seller_id!==context.sellerId&&(!target.sellerId||row.seller_id===target.sellerId)
-    for(const id of candidates){
-      if(!/^ML[AU]\d+$/.test(id))continue
-      try{const row=await get(`/items/${id}`);if(row.id===id&&matches(row))selected=row}
-      catch(error){if(!(error instanceof MlHttpError)||![404,410].includes(error.status))throw error}
+    // Public offers can be readable even when /items and /user-products deny access.
+    // The source remains a User Product, and a missing MLU is not resolution evidence.
+    const rows: MlData[] = []
+    const warnings: string[] = []
+    const pages = new Set<string>()
+    let offset = 0
+    let total: number | null = null
+    let complete = false
+    for (let page = 0; page < 50; page++) {
+      const path = `/products/${source.id}/items?status=active&limit=20${offset ? `&offset=${offset}` : ''}`
+      try {
+        const data = await getOffers(path, page === 0)
+        if (!Array.isArray(data.results)) throw new Error('Ofertas del producto sin lista válida')
+        const batch = data.results as MlData[]
+        if (batch.some(row => !row || !positive(row.seller_id) ||
+          !('price' in row) || row.price != null && nullableNumber(row.price) == null ||
+          row.currency_id != null && typeof row.currency_id !== 'string'))
+          throw new Error('Ofertas del producto con vendedor, importe o moneda inválidos')
+        const signature = JSON.stringify(batch)
+        if (batch.length && pages.has(signature)) throw new Error('La API repitió una página de ofertas')
+        pages.add(signature)
+        rows.push(...batch)
+        offset += batch.length
+        const paging = data.paging as {total?: unknown} | undefined
+        if (paging?.total != null) {
+          if (!Number.isInteger(paging.total) || Number(paging.total) < 0)
+            throw new Error('Total de ofertas inválido')
+          total = Number(paging.total)
+        }
+        if (total != null ? offset >= total : batch.length < 20) { complete = true; break }
+        if (!batch.length) throw new Error('La API no devolvió las ofertas restantes')
+      } catch (error) {
+        if (!rows.length) throw error
+        warnings.push(`Cobertura parcial (${path}): ${error instanceof Error ? error.message : 'falló la consulta de ofertas'}`)
+        break
+      }
     }
-    if(!selected){
-      const up=await get(`/user-products/${source.id}`)
-      if(up.id!==source.id)throw new Error('Identidad del User Product no verificada')
-      const owner=nullableNumber(up.user_id)
-      if(!owner||owner===context.sellerId||(target.sellerId&&target.sellerId!==owner))throw new Error('Vendedor del User Product no verificado')
-      const search=await get(`/users/${owner}/items/search?user_product_id=${encodeURIComponent(source.id)}&limit=100`)
-      if(!Array.isArray(search.results))throw new Error('Resolución del User Product sin publicaciones válidas')
-      const paging=search.paging as {total?:number}|undefined
-      if((paging?.total??0)>search.results.length)throw new Error('Resolución parcial del User Product; indicar una MLU para verificar')
-      const resolved:MlData[]=[]
-      for(const id of search.results){if(typeof id!=='string')continue;const row=await get(`/items/${id}`);if(matches(row))resolved.push(row)}
-      if(resolved.length!==1)throw new Error(resolved.length?'Varias publicaciones del User Product; indicar una MLU para verificar':'User Product sin publicación identificable; no se confirmó indisponibilidad')
-      selected=resolved[0]
+    if (!complete && !warnings.length) warnings.push('Cobertura parcial: se alcanzó el límite de 1.000 ofertas por consulta')
+    resource = `/products/${source.id}/items?status=active&limit=20`
+    now = context.now ?? new Date().toISOString()
+    const external = rows.filter(row => row.seller_id !== context.sellerId &&
+      (!target.sellerId || row.seller_id === target.sellerId) &&
+      (row.status == null || row.status === 'active'))
+    const offers = external.map(row => ({row, price: observe(nullableNumber(row.price), nullableString(row.currency_id), now, 'user_product', context.fx)}))
+    const valid = offers.filter(offer => positive(offer.price.normalizedAmount))
+      .sort((a,b) => a.price.normalizedAmount! - b.price.normalizedAmount!)
+    const best = valid[0] ?? offers.find(offer => positive(offer.price.amount)) ?? offers[0]
+    if (!complete && !positive(best?.price.normalizedAmount))
+      throw new Error('Cobertura parcial sin precio comparable; se conserva la observación anterior')
+    body = best?.row ?? {}
+    observation = {...(best?.price ?? observe(null,null,now,'user_product',context.fx)),
+      offersConsulted: rows.length, offersTotal: total,
+      coverage: complete ? total == null ? 'unknown' : 'complete' : 'partial',
+      state: external.length ? 'observed' : 'no_external_offers', warnings,
     }
-    body=selected
-    if(!('price' in body)||body.price!=null&&(typeof body.price!=='number'||!Number.isFinite(body.price)))throw new Error('Respuesta del User Product sin precio válido')
-    resource=`/items/${String(body.id)}`
-    now=context.now??new Date().toISOString()
-    observation=observe((body.sale_price as {amount?:number}|null)?.amount??nullableNumber(body.price),nullableString(body.currency_id),now,'user_product',context.fx)
   } else if (source.kind === 'catalog') {
     resource=`/products/${source.id}/items?status=active&limit=20`
-    const data = await get(
-      resource,
-    )
+    const data = await getOffers(resource, true)
     if (!Array.isArray(data.results)) throw new Error('Respuesta de catálogo sin lista de ofertas válida')
     now = context.now ?? new Date().toISOString()
     const results = (
@@ -238,8 +274,11 @@ export async function fetchTarget(
       context.fx,
     )
   }
+  if(noOfferEvidence) observation = {...observation,availabilityEvidence:noOfferEvidence}
   const itemId =
-    nullableString(body.item_id) ?? (source.kind!=='catalog'?nullableString(body.id):null)
+    source.kind === 'user_product'
+      ? [body.item_id, body.id].find((id): id is string => typeof id === 'string' && /^ML[AU]\d+$/.test(id)) ?? null
+      : nullableString(body.item_id) ?? (source.kind === 'item' ? nullableString(body.id) : null)
   if(source.kind==='catalog'&&itemId&&!body.permalink){
     try{
       const detail=await get(`/items/${itemId}`)
@@ -247,7 +286,7 @@ export async function fetchTarget(
         body={...detail,...body,permalink:detail.permalink}
     }catch{/* Optional item link never changes price validity or source availability. */}
   }
-  const sellerId = nullableNumber(body.seller_id)
+  const sellerId = nullableNumber(body.seller_id) ?? (observation.state === 'no_external_offers' ? target.sellerId ?? null : null)
   let sellerName = nullableString(body.seller_name)
   if (sellerId && !sellerName) {
     try {
@@ -263,9 +302,9 @@ export async function fetchTarget(
     sellerId,
     sellerName,
     condition: nullableString(body.condition),
-    catalogProductId:source.kind==='catalog'?source.id:nullableString(body.catalog_product_id),userProductId:nullableString(body.user_product_id),
+    catalogProductId:source.kind==='catalog'?source.id:nullableString(body.catalog_product_id),userProductId:source.kind==='user_product'?source.id:nullableString(body.user_product_id),
     sourceKind:source.kind,sourceUrl:source.url,
-    itemPermalink:safeMarketplaceUrl(nullableString(body.permalink))??(source.kind==='catalog'&&itemId?catalogOfferUrl(source.id,itemId):null),
+    itemPermalink:(itemId?safeMarketplaceUrl(nullableString(body.permalink)):null)??(source.kind==='catalog'&&itemId?catalogOfferUrl(source.id,itemId):null),
     resolution:{sourceKind:source.kind,sourceId:source.id,itemId,sellerId,resource,validatedAt:now},
   }
   return {
@@ -277,7 +316,7 @@ export async function fetchTarget(
       source.kind==='item'?(safeMarketplaceUrl(nullableString(body.permalink))??source.url??''):(source.url??''),
     status:
       nullableString(body.status) ??
-      (target.kind === 'catalog' ? 'active' : null),
+      (target.kind === 'catalog' && observation.state !== 'no_external_offers' ? 'active' : null),
     condition: nullableString(body.condition),
     attributes: Array.isArray(body.attributes) ? body.attributes : [],
     available_quantity: nullableNumber(body.available_quantity),

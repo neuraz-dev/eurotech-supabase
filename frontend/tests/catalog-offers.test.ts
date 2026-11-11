@@ -71,11 +71,13 @@ test('duplicate pages are deduplicated and never claim complete coverage', async
   assert.equal(snapshot.offers.length,2)
   assert.equal(snapshot.coverage,'partial')
 })
-test('a failed later page rejects instead of replacing the successful snapshot with incomplete offers', async () => {
+test('a failed later page preserves observed offers with explicit partial coverage', async () => {
   const {context}=upstream(Array.from({length:25},(_,i)=>row(i+1)))
   const base=context.fetcher
   context.fetcher=async (input,init)=>String(input).includes('offset=20')?new Response(null,{status:503}):base(input,init)
-  await assert.rejects(()=>collectCatalogOffers('MLU100',[own],context),/HTTP 503/)
+  const {snapshot}=await collectCatalogOffers('MLU100',[own],context)
+  assert.equal(snapshot.offers.length,20);assert.equal(snapshot.coverage,'partial')
+  assert.ok(snapshot.warnings.some(w=>w.includes('HTTP 503')))
 })
 test('metadata failures retain offer prices and declare missing details', async () => {
   const {context}=upstream([row(1),row(2)])

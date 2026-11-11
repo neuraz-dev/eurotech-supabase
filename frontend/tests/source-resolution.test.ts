@@ -4,7 +4,7 @@ import {fetchTarget,parseTarget,MlHttpError,type MlContext} from '../../supabase
 import {safeMarketplaceUrl,sourceIdentity} from '../../supabase/functions/_shared/source-links.ts'
 import {fixedCandidates,isConfirmedSource404,type Recovery} from '../../supabase/functions/_shared/source-recovery.ts'
 import {buildAlertEvents,type EventRule,type EventSnapshot} from '../../supabase/functions/_shared/alert-events.ts'
-import {observe,type CompetitorLink,compare} from '../../supabase/functions/_shared/monitoring.ts'
+import {observe,retainLastPricedObservation,type CompetitorLink,compare} from '../../supabase/functions/_shared/monitoring.ts'
 const at='2026-11-09T00:00:00Z'
 test('7270 follows the cheapest normalized external catalog offer, independently of the original seller',async()=>{
  const ctx=context({
@@ -25,6 +25,7 @@ const item={id:'MLU12',user_product_id:'MLUU123',catalog_product_id:'MLU999',sel
 function context(routes:Record<string,unknown|number>,calls:string[]=[]):MlContext{return {token:'test',sellerId:1,fx:null,apiUrl:'https://ml.test',now:at,fetcher:async input=>{
  const url=new URL(String(input));const path=url.pathname+url.search;calls.push(path)
  const body=routes[path];assert.notEqual(body,undefined,'Unexpected resource '+path)
+ if(body instanceof Response)return body.clone()
  return typeof body==='number'?Response.json({},{status:body}):Response.json(body)
 }}}
 test('source URLs preserve /up and repair legacy /p/MLUU without accepting unrelated origins',()=>{
@@ -35,28 +36,53 @@ test('source URLs preserve /up and repair legacy /p/MLUU without accepting unrel
  assert.equal(safeMarketplaceUrl('https://secret@mercadolibre.com.uy/up/MLUU123'),null)
  assert.equal(sourceIdentity({kind:'catalog',id:'MLU2081534097'}).kind,'catalog')
 })
-test('User Product reuses a candidate only after validating identity and seller, never /products',async()=>{
+const upTarget={...parseTarget('https://www.mercadolibre.com.uy/up/MLUU123'),sellerId:2,itemId:'MLU12'}
+const offersPath='/products/MLUU123/items?status=active&limit=20'
+const offer={seller_id:2,seller_name:'FERROFERTASIMP',price:80,currency_id:'UYU'}
+test('User Product public offers succeed without accessing restricted individual endpoints or reusing a previous MLU',async()=>{
  const calls:string[]=[]
- const value=await fetchTarget({...parseTarget('https://www.mercadolibre.com.uy/up/MLUU123'),itemId:'MLU12',sellerId:2},context({'/items/MLU12':item},calls))
- assert.equal(value.observation.itemId,'MLU12');assert.equal(value.observation.resolution?.sourceId,'MLUU123')
- assert.equal(value.permalink,'https://www.mercadolibre.com.uy/up/MLUU123')
- assert.equal(value.observation.itemPermalink,item.permalink);assert.deepEqual(calls,['/items/MLU12'])
+ const value=await fetchTarget(upTarget,context({[offersPath]:{results:[offer],paging:{total:1}}},calls))
+ assert.deepEqual(calls,[offersPath]);assert.equal(value.observation.itemId,null)
+ assert.equal(value.observation.sellerId,2);assert.equal(value.observation.amount,80)
+ assert.equal(value.observation.userProductId,'MLUU123');assert.equal(value.observation.catalogProductId,null)
+ assert.equal(value.observation.sourceKind,'user_product');assert.equal(value.observation.coverage,'complete')
+ assert.equal(value.observation.itemPermalink,null);assert.equal(value.permalink,'https://www.mercadolibre.com.uy/up/MLUU123')
 })
-test('wrong candidate is not silently adopted; official User Product discovery must prove membership',async()=>{
- const value=await fetchTarget({...parseTarget('https://www.mercadolibre.com.uy/up/MLUU123'),itemId:'MLU11'},context({
- '/items/MLU11':{...item,id:'MLU11',user_product_id:'MLUU444'},'/user-products/MLUU123':{id:'MLUU123',user_id:2},
- '/users/2/items/search?user_product_id=MLUU123&limit=100':{results:['MLU12'],paging:{total:1}},'/items/MLU12':item,
- }))
- assert.equal(value.observation.itemId,'MLU12')
+test('User Product keeps a concrete MLU only when returned in the current offers',async()=>{
+ const value=await fetchTarget(upTarget,context({[offersPath]:{results:[{...offer,item_id:'MLU13'}],paging:{total:1}}}))
+ assert.equal(value.observation.itemId,'MLU13')
 })
-test('ambiguous User Product remains unresolved',async()=>{
- await assert.rejects(fetchTarget(parseTarget('https://www.mercadolibre.com.uy/up/MLUU123'),context({
- '/user-products/MLUU123':{id:'MLUU123',user_id:2},'/users/2/items/search?user_product_id=MLUU123&limit=100':{results:['MLU12','MLU13'],paging:{total:2}},
- '/items/MLU12':item,'/items/MLU13':{...item,id:'MLU13'},
- })),/Varias publicaciones/)
+test('User Product selects the normalized minimum across pages for the associated seller',async()=>{
+ const ctx=context({[offersPath]:{results:[{...offer,price:2,currency_id:'USD'},{...offer,price:1,seller_id:3}],paging:{total:3}},[offersPath+'&offset=2']:{results:[{...offer,price:75}],paging:{total:3}}})
+ ctx.fx={rate:40,source:'test',fetchedAt:at,publishedAt:null}
+ const value=await fetchTarget(upTarget,ctx)
+ assert.equal(value.observation.amount,75);assert.equal(value.observation.offersConsulted,3)
+ assert.equal(value.observation.coverage,'complete');assert.equal(value.observation.sellerId,2)
 })
-for(const status of [401,403,429,500])test(`User Product HTTP ${status} retains a technical error`,async()=>{
- await assert.rejects(fetchTarget({...parseTarget('https://www.mercadolibre.com.uy/up/MLUU123'),itemId:'MLU12'},context({'/items/MLU12':status})),e=>e instanceof MlHttpError&&e.status===status)
+test('User Product excludes our seller and invalid prices without choosing another assigned vendor',async()=>{
+ const value=await fetchTarget(upTarget,context({[offersPath]:{results:[{...offer,seller_id:1,price:1},{...offer,price:-1},{...offer,price:0},{...offer,seller_id:3,price:1},offer],paging:{total:5}}}))
+ assert.equal(value.observation.amount,80)
+ const missing=await fetchTarget(upTarget,context({[offersPath]:{results:[{...offer,seller_id:1},{...offer,seller_id:3}],paging:{total:2}}}))
+ assert.equal(missing.observation.state,'no_external_offers');assert.equal(missing.observation.amount,null)
+})
+test('failed conversion preserves original currency without winning over a comparable offer',async()=>{
+ const value=await fetchTarget(upTarget,context({[offersPath]:{results:[{...offer,price:1,currency_id:'USD'},offer],paging:{total:2}}}))
+ assert.equal(value.observation.currency,'UYU');assert.equal(value.observation.amount,80)
+ const unconverted=await fetchTarget(upTarget,context({[offersPath]:{results:[{...offer,currency_id:'USD'}],paging:{total:1}}}))
+ assert.equal(unconverted.observation.currency,'USD');assert.equal(unconverted.observation.normalizedAmount,null)
+})
+test('partial pagination retains a valid observed price with explicit warning',async()=>{
+ const value=await fetchTarget(upTarget,context({[offersPath]:{results:[offer],paging:{total:2}},[offersPath+'&offset=1']:403}))
+ assert.equal(value.observation.amount,80);assert.equal(value.observation.coverage,'partial')
+ assert.match(value.observation.warnings![0],/HTTP 403/)
+ await assert.rejects(fetchTarget(upTarget,context({[offersPath]:{results:[{...offer,price:0}],paging:{total:2}},[offersPath+'&offset=1']:500})),/Cobertura parcial sin precio/)
+})
+test('malformed offers are not successful observations',async()=>{
+ for(const results of [null,[{price:80,currency_id:'UYU'}],[{...offer,price:'80'}]])
+  await assert.rejects(fetchTarget(upTarget,context({[offersPath]:{results}})),/válid/)
+})
+for(const status of [401,403,404,429,500])test(`User Product offers HTTP ${status} retains a technical error`,async()=>{
+ await assert.rejects(fetchTarget(upTarget,context({[offersPath]:status})),e=>e instanceof MlHttpError&&e.status===status)
 })
 test('a previous item ID alone cannot turn an unrelated resource 404 into unavailability',()=>{
  const target={kind:'catalog' as const,id:'MLUU123'}
@@ -112,4 +138,52 @@ test('missing fixed offer or wrong seller does not masquerade as confirmed unava
  for(const rows of [[],[{item_id:'MLU12',seller_id:3,price:80,currency_id:'UYU'}]]){
   await assert.rejects(fetchTarget({kind:'item',id:'MLU12',catalogId:'MLU999',sellerId:2},context({'/items/MLU12':403,'/products/MLU999/items?status=active&limit=20&offset=0':{results:rows,paging:{total:rows.length}}})),/no apareció|no verificado/)
  }
+})
+
+test('events and ranking use source identity without MLU and ignore FX-only changes',()=>{
+ const rival={...dynamic,id:'MLUU123',observation:{...observe(80,'USD',at,'user_product',{rate:1,source:'test',fetchedAt:at,publishedAt:null}),itemId:null,sellerId:2,sourceKind:'user_product' as const}}
+ const link={...links[0],competitor_item_id:rival.id}
+ const fx={rate:1,source:'test',fetchedAt:at,publishedAt:null}
+ const events=buildAlertEvents(rival,observe(90,'USD',at,'user_product'),[own],[rival],[link],[rule],fx)
+ assert.equal(events.length,1)
+ const rows=(events[0].event_snapshot as EventSnapshot).rows
+ assert.equal(rows.find(r=>!r.isOwn)!.mlu,null);assert.equal(rows.find(r=>!r.isOwn)!.id,rival.id)
+ assert.equal(rows.filter(r=>!r.isOwn).length,1)
+ assert.equal(buildAlertEvents(rival,observe(80,'USD',at,'user_product'),[own],[rival],[link],[rule],{...fx,rate:1.1}).length,0)
+})
+
+const noWinners=()=>Response.json({error:'not_found',message:'No winners found',access_token:'must-not-persist'},{status:404})
+for(const kind of ['catalog','user_product'] as const)test(`recognized first-page absence produces non-comparable evidence (${kind})`,async()=>{
+ const target=kind==='catalog'?{kind:'catalog' as const,id:'MLU999',sellerId:2}:upTarget
+ const path=kind==='catalog'?'/products/MLU999/items?status=active&limit=20':offersPath
+ const value=await fetchTarget(target,context({[path]:noWinners(),'/products/MLU999':403,'/users/2':{nickname:'Rival'}}))
+ assert.equal(value.observation.state,'no_external_offers');assert.equal(value.observation.amount,null)
+ assert.equal(value.observation.normalizedAmount,null);assert.equal(value.observation.sellerId,2)
+ assert.equal(value.status,null);assert.equal(value.observation.itemId,null)
+ assert.deepEqual(value.observation.availabilityEvidence,{httpStatus:404,apiCode:'not_found',message:'No winners found',resource:path,observedAt:at})
+ assert.equal(JSON.stringify(value).includes('must-not-persist'),false)
+ const result=compare(own,{...value,availability:'unavailable'},[{...links[0],competitor_item_id:target.id}])
+ assert.equal(result.status,'no_external_offers');assert.equal(result.deltaPct,null)
+})
+for(const response of [Response.json({error:'not_found',message:'No winners found'},{status:403}),Response.json({error:'not_found',message:'Product not found'},{status:404}),Response.json({message:'No winners found'},{status:404}),new Response('invalid JSON',{status:404})])test(`unrecognized absence stays an error (${response.status})`,async()=>{
+ await assert.rejects(fetchTarget(upTarget,context({[offersPath]:response})),e=>e instanceof MlHttpError&&e.status===response.status)
+})
+test('absence on a later page preserves observed offers and reports partial coverage',async()=>{
+ const value=await fetchTarget(upTarget,context({[offersPath]:{results:[offer],paging:{total:2}},[offersPath+'&offset=1']:noWinners()}))
+ assert.equal(value.observation.state,'observed');assert.equal(value.observation.amount,80)
+ assert.equal(value.observation.coverage,'partial');assert.equal(value.observation.availabilityEvidence,undefined)
+ assert.equal(value.observation.warnings?.length,1)
+})
+test('repeated absence retains a bounded historical observation without allowing ranking or events',()=>{
+ const priced={...observe(80,'UYU',at,'user_product'),sellerId:2,itemId:'MLU12'}
+ const empty={...observe(null,null,at,'user_product'),state:'no_external_offers' as const}
+ let current=retainLastPricedObservation(empty,priced)
+ for(let i=0;i<5;i++)current=retainLastPricedObservation(empty,current)
+ assert.deepEqual(current.lastPricedObservation,priced)
+ assert.equal('lastPricedObservation' in current.lastPricedObservation!,false)
+ const rival={...dynamic,id:'MLUU123',observation:current,availability:'unavailable'}
+ const link={...links[0],competitor_item_id:rival.id}
+ assert.equal(buildAlertEvents(rival,priced,[own],[rival],[link],[rule],null).length,0)
+ assert.equal(compare(own,rival,[link]).status,'no_external_offers')
+ assert.equal(retainLastPricedObservation(priced,current).lastPricedObservation,undefined)
 })

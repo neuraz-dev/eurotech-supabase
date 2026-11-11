@@ -7,6 +7,9 @@ const now = new Date().toISOString()
 function fixture(
   t: TestContext,
   options: {
+    noWinners?: boolean
+    storedPrice?: number
+    userProduct?: boolean
     catalog?: boolean
     noToken?: boolean
     expired?: boolean
@@ -72,7 +75,7 @@ function fixture(
               })
         if (table === 'ml_monitoring_settings')
           return Response.json({ max_age_hours: 4 })
-        const id = options.catalog ? 'MLU999' : 'MLU200'
+        const id = options.userProduct ? 'MLUU123' : options.catalog ? 'MLU999' : 'MLU200'
         const link = {
           id: 'link',
           competitor_item_id: id,
@@ -90,7 +93,9 @@ function fixture(
             : [
                 {
                   id,
-                  target_kind: options.catalog ? 'catalog' : 'item',
+                  price:options.storedPrice??null,currency_id:'UYU',synced_at:now,
+                  target_kind: options.userProduct || options.catalog ? 'catalog' : 'item',
+                  ...(options.userProduct ? {source_kind:'user_product',source_id:'MLUU123',seller_id:2} : {}),
                   observation: options.noObservation?null:{...observe(options.samePrice?80:90, 'UYU', now, 'item'),...(options.knownIdentity?{itemId:id,resolution:{sourceKind:'item',sourceId:id,itemId:id,sellerId:2,resource:'/items/'+id,validatedAt:now}}:{})},
                   status: 'active',
                 },
@@ -191,13 +196,14 @@ function fixture(
     if(options.malformed&&url.pathname.startsWith('/items/'))return Response.json({})
     if(options.catalogMalformed&&url.pathname.endsWith('/items'))return Response.json({})
     if(options.priceMissing&&url.pathname.startsWith('/items/'))return Response.json({id:url.pathname.split('/').pop(),seller_id:2,status:'active'})
+    if(options.noWinners&&url.pathname.endsWith('/items'))return Response.json({error:'not_found',message:'No winners found'},{status:404})
     if(options.emptyCatalog&&url.pathname.endsWith('/items'))return Response.json({results:[],paging:{total:0}})
     if (url.pathname.endsWith('/items'))
       return Response.json({
         paging: { total: 1 },
         results: [
           {
-            item_id: 'MLU200',
+            ...(options.userProduct ? {} : {item_id:'MLU200'}),
             seller_id: options.onlyOwn ? 1 : 2,
             price: 80,
             currency_id: options.currency ?? 'UYU',
@@ -384,4 +390,41 @@ for(const options of [{priceMissing:true},{catalog:true,catalogMalformed:true}])
  assert.equal(response.status,500)
  assert.equal(f.writes[0].row.availability,undefined)
  assert.equal(f.writes[0].row.observation,undefined)
+})
+
+for (const writeError of [false,true]) test(`User Product without MLU confirms persistence before reporting success (${writeError})`,async t=>{
+ const f=fixture(t,{userProduct:true,writeError})
+ const response=await f.handler(new Request('https://local.test',{method:'POST',headers:{authorization:'Bearer secret'}}))
+ const result=await response.json()
+ assert.equal(result.items_updated,writeError?0:1)
+ assert.equal(result.items_failed,writeError?1:0)
+ assert.equal(f.requests.some(url=>url.includes('repair_verified_source_archives')),false)
+ if(!writeError){
+  const update=f.writes.find(w=>w.table==='ml_competitor_items')!
+  assert.equal((update.row.observation as {itemId:unknown}).itemId,null)
+  assert.equal(update.row.source_kind,'user_product')
+ }
+})
+
+for(const userProduct of [false,true])for(const writeError of [false,true])test(`recognized absence persists before success and generates no alerts (${userProduct}, ${writeError})`,async t=>{
+ const f=fixture(t,{catalog:!userProduct,userProduct,noWinners:true,writeError})
+ const response=await f.handler(request()),body=await response.json()
+ assert.equal(response.status,writeError?500:200)
+ assert.equal(body.items_updated,writeError?0:1);assert.equal(body.items_failed,writeError?1:0)
+ assert.equal(body.alerts_fired,0)
+ assert.equal(f.requests.some(url=>url.includes('repair_verified_source_archives')),false)
+ if(!writeError){
+  const update=f.writes.find(w=>w.table==='ml_competitor_items')!.row
+  const o=update.observation as {state:string;amount:unknown;lastPricedObservation:{amount:number}}
+  assert.equal(update.availability,'unavailable');assert.equal(update.price,null)
+  assert.equal(o.state,'no_external_offers');assert.equal(o.amount,null)
+  assert.equal(o.lastPricedObservation.amount,90)
+ }
+})
+test('legacy stored price is kept as historical evidence when no observation exists',async t=>{
+ const f=fixture(t,{catalog:true,noWinners:true,noObservation:true,storedPrice:123})
+ await f.handler(request())
+ const update=f.writes.find(w=>w.table==='ml_competitor_items')!.row
+ const historical=(update.observation as {lastPricedObservation:{amount:number;currency:string;source:string}}).lastPricedObservation
+ assert.equal(historical.amount,123);assert.equal(historical.currency,'UYU');assert.equal(historical.source,'legacy_record')
 })
