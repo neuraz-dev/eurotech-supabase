@@ -1,0 +1,73 @@
+import { expect, test } from '@playwright/test'
+
+async function jump(page: import('@playwright/test').Page, target: number, side: 'anterior'|'siguiente'='siguiente') {
+  await page.getByRole('button',{name:`Ir a una página ${side}`,exact:true}).click()
+  const dialog=page.getByRole('dialog',{name:'Ir a una página',exact:true})
+  await expect(dialog).toBeVisible()
+  await dialog.getByRole('spinbutton').fill(String(target))
+  await dialog.getByRole('button',{name:'Ir a',exact:true}).click()
+  await expect(dialog).toHaveCount(0)
+}
+
+test('products truncate page buttons and both gaps support validated keyboard-accessible jumps',async({page,request})=>{
+  await page.goto('/dashboard/productos')
+  const expected=(await (await request.get('/api/products-page?limit=1&count=true')).json()).count
+  await expect(page.getByRole('button',{name:`Todos (${expected})`,exact:true})).toBeVisible()
+  const nav=page.getByRole('navigation',{name:'Paginación de productos',exact:true})
+  const numbers=nav.getByRole('button',{name:/^Página \d+$/})
+  const total=Number(await numbers.last().innerText())
+  expect(total).toBeGreaterThan(15)
+  await expect(numbers).toHaveText(['1','2','3',String(total)])
+  await expect(nav.getByRole('button',{name:'← Anterior',exact:true})).toBeDisabled()
+  await nav.getByRole('button',{name:'Ir a una página siguiente',exact:true}).click()
+  const dialog=page.getByRole('dialog',{name:'Ir a una página',exact:true})
+  const navBounds=await nav.boundingBox(),dialogBounds=await dialog.boundingBox()
+  expect(dialogBounds!.y).toBeLessThan(navBounds!.y)
+  await dialog.getByRole('spinbutton').fill('0')
+  await dialog.getByRole('button',{name:'Ir a',exact:true}).click()
+  await expect(dialog.getByRole('alert')).toContainText(`entre 1 y ${total}`)
+  await dialog.getByRole('spinbutton').fill('13')
+  await dialog.getByRole('spinbutton').press('Enter')
+  await expect(nav.getByRole('button',{name:'Página 13',exact:true})).toHaveAttribute('aria-current','page')
+  await expect(numbers).toHaveText(['1','11','12','13','14','15',String(total)])
+  await nav.getByRole('button',{name:'Ir a una página anterior',exact:true}).click()
+  await page.keyboard.press('Escape')
+  await expect(dialog).toHaveCount(0)
+  await expect(nav.getByRole('button',{name:'Ir a una página anterior',exact:true})).toBeFocused()
+  await jump(page,total)
+  await expect(nav.getByRole('button',{name:'Siguiente →',exact:true})).toBeDisabled()
+  await expect(numbers).toHaveText(['1',String(total-2),String(total-1),String(total)])
+  await jump(page,1,'anterior')
+  await expect(nav.getByRole('button',{name:'Página 1',exact:true})).toHaveAttribute('aria-current','page')
+  await page.screenshot({path:'/tmp/eurotech-pagination-desktop.png'})
+  await page.setViewportSize({width:390,height:844})
+  await nav.getByRole('button',{name:'Ir a una página siguiente',exact:true}).click()
+  await expect(dialog).toBeVisible()
+  const mobile=await dialog.boundingBox()
+  expect(mobile!.x).toBeGreaterThanOrEqual(0)
+  expect(mobile!.x+mobile!.width).toBeLessThanOrEqual(390)
+  await page.screenshot({path:'/tmp/eurotech-pagination-mobile.png'})
+})
+
+test('alerts and sync histories expose the same numbered controls and request the chosen page',async({page})=>{
+  let alertPage=1,syncPage=1
+  const counts={all:1550,read:0,unread:1550,total:1550,advantage:0,disadvantage:1550,tie:0}
+  await page.route('**/api/alert-history?*',async route=>{
+    alertPage=Number(new URL(route.request().url()).searchParams.get('page')??1)
+    await route.fulfill({json:{items:[],nextCursor:null,counts}})
+  })
+  await page.goto('/dashboard/alertas')
+  await expect(page.getByRole('navigation',{name:'Paginación de alertas'}).getByRole('button',{name:'Página 31',exact:true})).toBeVisible()
+  await jump(page,13)
+  await expect.poll(()=>alertPage).toBe(13)
+  await expect(page.getByRole('button',{name:'Página 13',exact:true})).toHaveAttribute('aria-current','page')
+  await page.route('**/api/manual-sync?*',async route=>{
+    syncPage=Number(new URL(route.request().url()).searchParams.get('page')??1)
+    await route.fulfill({json:{items:[],count:1550,page:syncPage}})
+  })
+  await page.goto('/dashboard/sincronizaciones')
+  await expect(page.getByRole('navigation',{name:'Paginación',exact:true}).getByRole('button',{name:'Página 31',exact:true})).toBeVisible()
+  await jump(page,13)
+  await expect.poll(()=>syncPage).toBe(13)
+  await expect(page.getByRole('button',{name:'Página 13',exact:true})).toHaveAttribute('aria-current','page')
+})

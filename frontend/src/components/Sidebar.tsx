@@ -65,9 +65,9 @@ export default function Sidebar({ user }: { user: User }) {
   }
 
   return (
-    <aside className="w-full shrink-0 lg:flex lg:h-full lg:min-h-0 lg:w-[296px]">
+    <aside className="w-full shrink-0 lg:sticky lg:top-5 lg:flex lg:h-[calc(100dvh-2.5rem)] lg:min-h-0 lg:w-[296px] lg:self-start">
       <div className="flex h-full w-full flex-col gap-3 px-4 pb-4 pt-4 sm:px-6 lg:rounded-[1.75rem] lg:border lg:border-[rgba(185,11,8,0.10)] lg:bg-[rgba(255,255,255,0.78)] lg:px-4 lg:py-4 lg:shadow-[0_24px_60px_rgba(42,31,29,0.08)] lg:backdrop-blur-sm">
-        <div className="overflow-hidden rounded-[1.6rem] bg-[#050505] p-4 text-white shadow-[0_22px_50px_rgba(10,10,10,0.28)] sm:p-5">
+        <div className="overflow-hidden rounded-[1.6rem] bg-[#050505] p-4 text-white sm:p-5">
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0">
               <BrandLogo />
@@ -86,7 +86,7 @@ export default function Sidebar({ user }: { user: User }) {
           </div>
         </div>
 
-        <div className="rounded-[1.4rem] border border-[rgba(185,11,8,0.10)] bg-[rgba(255,255,255,0.78)] px-3 py-3 shadow-[0_10px_26px_rgba(185,11,8,0.05)] lg:flex-1 lg:min-h-0 lg:bg-transparent lg:px-0 lg:py-0 lg:shadow-none">
+        <div className="rounded-[1.4rem] border border-[rgba(185,11,8,0.10)] bg-[rgba(255,255,255,0.78)] px-3 py-3 shadow-[0_10px_26px_rgba(185,11,8,0.05)] lg:flex lg:flex-col lg:flex-1 lg:min-h-0 lg:bg-transparent lg:px-0 lg:pt-3 lg:pb-0 lg:shadow-none">
           <div className="mb-3 flex items-center justify-between px-1 lg:px-3">
             <div>
               <p className="text-[10px] uppercase tracking-[0.28em] text-[rgba(185,11,8,0.62)]">Navegación</p>
@@ -94,7 +94,7 @@ export default function Sidebar({ user }: { user: User }) {
             </div>
           </div>
 
-          <nav className="flex gap-2 overflow-x-auto pb-1 lg:flex lg:flex-col lg:gap-1.5 lg:overflow-y-auto lg:overflow-x-hidden lg:pb-0 lg:pr-1">
+          <nav className="flex gap-2 overflow-x-auto pb-1 lg:flex lg:flex-col lg:flex-1 lg:min-h-0 lg:gap-1.5 lg:overflow-y-auto lg:overflow-x-hidden lg:pb-0 lg:pr-1">
             {navItems.map(({ href, label, icon }) => {
               const Icon = iconMap[icon]
               const isActive = href === '/dashboard' ? pathname === href : pathname.startsWith(href)
@@ -127,7 +127,7 @@ export default function Sidebar({ user }: { user: User }) {
 
         <div className="mt-auto rounded-[1.4rem] border border-[rgba(185,11,8,0.10)] bg-[rgba(255,255,255,0.84)] px-4 py-4 shadow-[0_10px_26px_rgba(185,11,8,0.05)]">
           <div className="flex items-center gap-3">
-            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-[linear-gradient(135deg,#B90B08_0%,#D93A34_100%)] text-sm font-semibold text-white shadow-[0_12px_24px_rgba(185,11,8,0.26)]">
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-[linear-gradient(135deg,#B90B08_0%,#D93A34_100%)] text-sm font-semibold text-white shadow-[0_3px_8px_rgba(185,11,8,0.14)]">
               {initial}
             </div>
             <div className="min-w-0">

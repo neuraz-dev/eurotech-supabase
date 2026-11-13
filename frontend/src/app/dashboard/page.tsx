@@ -36,7 +36,7 @@ export default async function DashboardPage() {
   ] = await Promise.all([
     admin.schema('ml').from('ml_products').select('*', { count: 'exact', head: true }),
     admin.schema('ml').from('ml_products').select('*', { count: 'exact', head: true }).eq('status', 'active'),
-    admin.schema('ml').from('ml_price_alerts').select('*', { count: 'exact', head: true }),
+    admin.schema('ml').from('ml_price_alerts').select('*', { count: 'exact', head: true }).is('archived_at', null),
     admin.schema('ml').from('ml_products').select('synced_at').order('synced_at', { ascending: false }).limit(1).single(),
     admin.schema('ml').from('ml_competitor_items').select('synced_at').order('synced_at', { ascending: false }).limit(1).single(),
   ])
@@ -67,7 +67,7 @@ export default async function DashboardPage() {
         <StatCard
           label="Alertas de precio"
           value={totalAlertas != null ? String(totalAlertas) : '—'}
-          description="Configuradas"
+          description="Eventos sin archivar"
           tone="blue"
         />
       </div>

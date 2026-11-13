@@ -28,6 +28,7 @@ export const projects: ProjectConfig[] = [
       { href: '/dashboard/alertas', label: 'Alertas de precios', icon: 'bell' },
       { href: '/dashboard/productos', label: 'Agregar precios rivales', icon: 'box' },
       { href: '/dashboard/seguimiento', label: 'Seguimiento', icon: 'trend' },
+      { href: '/dashboard/sincronizaciones', label: 'Sincronizaciones', icon: 'trend' },
       { href: '/dashboard/usuarios', label: 'Usuarios', icon: 'users' },
     ],
   },

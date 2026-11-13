@@ -1,0 +1,12 @@
+{
+  "name": "eurotech-monitor",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "npm --prefix frontend run build",
+    "start": "npm --prefix frontend run start"
+  },
+  "engines": {
+    "node": ">=22 <25"
+  }
+}

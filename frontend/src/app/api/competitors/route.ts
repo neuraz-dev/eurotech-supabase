@@ -1,419 +1,114 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createAdminClient } from '@/lib/supabase/admin'
-import { fetchUsdToUyu, convertUsdToUyu } from '@/lib/exchange-rate'
-import { normalizeSku } from '@/lib/sku'
+import { createClient } from '@/lib/supabase/server'
+import {
+  ApiError,
+  affectedProducts,
+  readBody,
+  resolveObservation,
+  withMonitorAuth,
+  loadCompetitors,
+} from '@/lib/monitoring/server'
+import { competitorRecord, parseTarget } from '@monitoring/ml-observation'
 
-const ML_API = 'https://api.mercadolibre.com'
-
-/**
- * Extract the best possible identifier from a ML URL or ID string.
- * Returns { catalogId, itemId } where catalogId is preferred for competitor tracking
- * (catalog items give price via /products endpoint; direct items may be 403).
- */
-function parseInput(input: string): {
-  catalogId: string | null
-  itemId: string | null
-  fallbackItemId: string | null
-} {
-  const trimmed = input.trim()
-  let catalogId: string | null = null
-  let itemId: string | null = null
-  let fallbackItemId: string | null = null
-
+export const GET = withMonitorAuth(async () =>
+  NextResponse.json(await loadCompetitors()),
+)
+export const POST = withMonitorAuth(async (req: NextRequest) => {
+  const body = await readBody(req)
+  const input = typeof body.itemIdOrUrl === 'string' ? body.itemIdOrUrl : ''
+  const scope = body.linkMode === 'sku' ? 'sku' : 'publication'
+  const ownId = typeof body.ourProductId === 'string' ? body.ourProductId : null
+  const sku = typeof body.ourSku === 'string' ? body.ourSku : null
+  await affectedProducts(scope, ownId, sku)
+  let record: Record<string, unknown>
   try {
-    const url = new URL(trimmed)
-
-    // Catalog/collection pages: /p/MLU... or /up/MLUU... in pathname
-    const catalogMatch = url.pathname.match(/\/(?:p|up)\/(ML[A-Z]+\d+)/i)
-    if (catalogMatch) {
-      catalogId = catalogMatch[1].toUpperCase()
-    }
-
-    // wid= param in fragment (winning item ID from search results)
-    const widMatch = url.hash.match(/[?&]wid=(ML[A-Z]+\d+)/i)
-    if (widMatch) {
-      fallbackItemId = widMatch[1].toUpperCase()
-      if (!catalogId) itemId = fallbackItemId
-    }
-
-    // Article URL: /MLU-123456789- in pathname
-    const articleMatch = url.pathname.match(/\/(ML[A-Z]+)-?(\d+)/i)
-    if (!catalogId && !itemId && articleMatch) {
-      itemId = (articleMatch[1] + articleMatch[2]).toUpperCase()
-    }
-  } catch {
-    // Not a URL — look for IDs in the raw string
-  }
-
-  // Fallback: first ML ID in string (ML + one or more letters + digits)
-  if (!catalogId && !itemId) {
-    const match = trimmed.match(/ML[A-Z]+\d+/i)
-    if (match) itemId = match[0].toUpperCase()
-  }
-
-  return { catalogId, itemId, fallbackItemId }
-}
-
-function titleFromInput(input: string): string | null {
-  try {
-    const url = new URL(input.trim())
-    const slug = url.pathname
-      .split('/')
-      .filter(Boolean)
-      .find((part) => part && !/^ML[A-Z]+\d+$/i.test(part) && part !== 'p' && part !== 'up')
-    if (!slug) return null
-    const title = slug
-      .replace(/[-_]+/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim()
-    return title.length > 0 ? title : null
-  } catch {
-    return null
-  }
-}
-
-function permalinkFromInput(input: string, resolvedId: string): string {
-  try {
-    const url = new URL(input.trim())
-    if (/\/(?:p|up)\/(ML[A-Z]+\d+)/i.test(url.pathname)) {
-      return `${url.origin}${url.pathname}`
-    }
-  } catch {
-    // Not a URL, fall through to normalized permalink.
-  }
-
-  if (/^ML[A-Z]{2,}\d+$/i.test(resolvedId)) {
-    return `https://www.mercadolibre.com.uy/up/${resolvedId}`
-  }
-
-  return `https://www.mercadolibre.com.uy/p/${resolvedId}`
-}
-
-function buildFallbackItemData(itemId: string, input: string): Record<string, unknown> {
-  const title = titleFromInput(input)
-  return {
-    id: itemId,
-    title,
-    price: null,
-    original_price: null,
-    currency_id: 'UYU',
-    available_quantity: null,
-    sold_quantity: null,
-    status: 'active',
-    condition: null,
-    listing_type_id: null,
-    category_id: null,
-    permalink: permalinkFromInput(input, itemId),
-    thumbnail: null,
-    seller_id: null,
-    seller_name: null,
-    health: null,
-  }
-}
-
-async function fetchSellerName(sellerId: number, accessToken: string): Promise<string | null> {
-  try {
-    const res = await fetch(`${ML_API}/users/${sellerId}`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    })
-    if (!res.ok) return null
-    const data = await res.json()
-    return (data.nickname as string) ?? null
-  } catch { return null }
-}
-
-async function fetchFromCatalog(
-  catalogId: string,
-  accessToken: string,
-  ourSellerId: number | null
-): Promise<Record<string, unknown> | null> {
-  const headers = { Authorization: `Bearer ${accessToken}` }
-
-  // Determine URL format: MLUU = universal product page (/up/), others = catalog (/p/)
-  const isUniversal = catalogId.match(/^ML[A-Z]{2,}/i)
-  const permalinkBase = isUniversal
-    ? `https://www.mercadolibre.com.uy/up/${catalogId}`
-    : `https://www.mercadolibre.com.uy/p/${catalogId}`
-
-  // Try to get product metadata (name, pictures) — may return 403 for some ID formats
-  let productData: Record<string, unknown> = {}
-  try {
-    const productRes = await fetch(`${ML_API}/products/${catalogId}`, { headers })
-    if (productRes.ok) productData = await productRes.json()
-  } catch { /* skip */ }
-
-  // Get all active listings for this catalog product
-  const itemsRes = await fetch(`${ML_API}/products/${catalogId}/items?limit=20`, { headers })
-  if (!itemsRes.ok) return null
-
-  const itemsData = await itemsRes.json()
-  const results: Array<{
-    item_id: string
-    seller_id: number
-    price: number
-    currency_id: string
-    condition: string
-    listing_type_id: string
-  }> = itemsData.results ?? []
-
-  if (results.length === 0) return null
-
-  // Pick cheapest competitor (exclude our own listings)
-  const competitors = ourSellerId
-    ? results.filter(r => r.seller_id !== ourSellerId)
-    : results
-
-  const best = competitors.length > 0
-    ? competitors.reduce((a, b) => a.price <= b.price ? a : b)
-    : results[0]
-
-  const pictures: Array<{ url?: string }> = (productData.pictures as Array<{ url?: string }>) ?? []
-  const thumbnail = pictures[0]?.url ?? null
-
-  const seller_name = await fetchSellerName(best.seller_id, accessToken)
-
-  return {
-    id: catalogId,
-    title: (productData.name as string) ?? null,
-    price: best.price,
-    original_price: null,
-    currency_id: best.currency_id ?? 'UYU',
-    status: 'active',
-    condition: best.condition ?? null,
-    listing_type_id: best.listing_type_id ?? null,
-    category_id: (productData.domain_id as string) ?? null,
-    permalink: permalinkBase,
-    thumbnail,
-    seller_id: best.seller_id,
-    seller_name,
-  }
-}
-
-async function fetchItemData(
-  itemId: string,
-  headers?: Record<string, string>
-): Promise<Record<string, unknown> | null> {
-  const res = await fetch(`${ML_API}/items/${itemId}`, { headers })
-  if (!res.ok) return null
-  const data = await res.json()
-  if (data.error || !data.title) return null
-  return data
-}
-
-async function fetchFromItem(
-  itemId: string,
-  accessToken: string
-): Promise<Record<string, unknown> | null> {
-  return await fetchItemData(itemId, { Authorization: `Bearer ${accessToken}` })
-    ?? await fetchItemData(itemId)
-}
-
-export async function POST(req: NextRequest) {
-  const { itemIdOrUrl, ourSku, ourProductId, linkMode } = await req.json()
-
-  const { catalogId, itemId, fallbackItemId } = parseInput(itemIdOrUrl)
-  if (!catalogId && !itemId) {
-    return NextResponse.json({ error: 'URL o ID de producto inválido' }, { status: 400 })
-  }
-  if (!ourSku && !ourProductId) {
-    return NextResponse.json({ error: 'Falta el producto propio a vincular' }, { status: 400 })
-  }
-
-  const admin = createAdminClient()
-
-  let resolvedOwnSku = ourSku as string | null
-  const resolvedOwnProductId = ourProductId as string | null
-
-  if (resolvedOwnProductId) {
-    const { data: ownProduct, error: ownProductError } = await admin
-      .schema('ml').from('ml_products')
-      .select('id, sku')
-      .eq('id', resolvedOwnProductId)
-      .maybeSingle()
-
-    if (ownProductError) {
-      return NextResponse.json({ error: ownProductError.message }, { status: 500 })
-    }
-    if (!ownProduct) {
-      return NextResponse.json({ error: 'No se encontró la publicación propia seleccionada' }, { status: 400 })
-    }
-
-    resolvedOwnSku = (ownProduct.sku as string | null) ?? resolvedOwnSku
-  } else if (resolvedOwnSku) {
-    const { data: sameSkuProducts, error: sameSkuError } = await admin
-      .schema('ml').from('ml_products')
-      .select('id')
-      .ilike('sku', resolvedOwnSku)
-      .neq('status', 'closed')
-
-    if (sameSkuError) {
-      return NextResponse.json({ error: sameSkuError.message }, { status: 500 })
-    }
-
-    const activeCount = sameSkuProducts?.length ?? 0
-    if (activeCount > 1 && linkMode !== 'sku') {
-      return NextResponse.json(
-        {
-          error: 'Este SKU está en más de una publicación. Reabrí el modal y vinculá por MLU publicación para elegir una sola.',
-        },
-        { status: 409 }
-      )
-    }
-  }
-
-  const { data: tokenRow } = await admin
-    .schema('ml').from('ml_tokens')
-    .select('access_token, user_id')
-    .order('expires_at', { ascending: false })
-    .limit(1)
-    .maybeSingle()
-
-  if (!tokenRow?.access_token) {
-    return NextResponse.json({ error: 'No hay token de MercadoLibre disponible' }, { status: 500 })
-  }
-
-  let mlData: Record<string, unknown> | null = null
-  let resolvedId: string | null = null
-
-  if (catalogId) {
-    // Catalog URL: use /products endpoint (works for competitor items)
-    mlData = await fetchFromCatalog(catalogId, tokenRow.access_token, tokenRow.user_id as number | null)
-    resolvedId = catalogId
-
-    // If MercadoLibre blocks the catalog lookup, keep the catalog ID and save
-    // a minimal record so the competitor can still be linked.
-    if (!mlData) {
-      mlData = buildFallbackItemData(catalogId, itemIdOrUrl)
-    }
-  } else if (itemId) {
-    // Direct item: try /items endpoint (only works for our own items)
-    mlData = await fetchFromItem(itemId, tokenRow.access_token)
-    resolvedId = itemId
-
-    // If blocked (competitor item), suggest using catalog URL
-    if (!mlData) {
-      mlData = buildFallbackItemData(itemId, itemIdOrUrl)
-    }
-  }
-
-  if (!mlData || !resolvedId) {
-    return NextResponse.json(
-      { error: `No se encontró el producto en MercadoLibre.` },
-      { status: 404 }
+    record = competitorRecord(
+      await resolveObservation(
+        input,
+        body.targetKind as string | undefined,
+        body.fixedItemId as string | undefined,
+      ),
     )
-  }
-
-  // Convert USD → UYU if needed
-  let usdPrice: number | null = null
-  if (mlData.currency_id === 'USD' && typeof mlData.price === 'number') {
-    const rate = await fetchUsdToUyu()
-    if (rate) {
-      usdPrice = mlData.price
-      mlData = { ...mlData, price: convertUsdToUyu(mlData.price, rate), currency_id: 'UYU' }
+  } catch (error) {
+    if (error instanceof ApiError) throw error
+    const target = parseTarget(input)
+    if (
+      target.kind !== 'item' ||
+      !(error instanceof Error) ||
+      !/Mercado Libre HTTP (403|404)/.test(error.message)
+    )
+      throw error
+    record = {
+      id: target.id,
+      target_kind: 'item',
+      title: null,
+      price: null,
+      currency_id: null,
+      observation: null,
+      synced_at: null,
+      permalink: input.startsWith('http') ? input : null,
+      status: null,
     }
   }
-
-  // Check for duplicate
-  const { data: existing } = await admin
-    .schema('ml').from('ml_competitor_items')
-    .select('id, our_sku, our_product_id')
-    .eq('id', resolvedId)
-    .maybeSingle()
-
-  const sameProductLink = existing && (
-    (resolvedOwnProductId && existing.our_product_id === resolvedOwnProductId) ||
-    (!resolvedOwnProductId && resolvedOwnSku && normalizeSku(existing.our_sku) === normalizeSku(resolvedOwnSku) && !existing.our_product_id)
+  const admin = createAdminClient()
+  const { data, error } = await admin.schema('ml').rpc('link_competitor', {
+    p_item: record,
+    p_scope: scope,
+    p_target: scope === 'sku' ? sku : ownId,
+  })
+  if (error) throw error
+  const item = (await loadCompetitors(admin)).find(
+    (item) => item.id === data.item.id,
   )
-
-  const record = {
-    id: resolvedId,
-    our_sku: resolvedOwnSku ?? null,
-    our_product_id: resolvedOwnProductId ?? null,
-    title: (mlData.title as string) ?? null,
-    price: (mlData.price as number) ?? null,
-    original_price: (mlData.original_price as number) ?? null,
-    currency_id: (mlData.currency_id as string) ?? 'UYU',
-    available_quantity: (mlData.available_quantity as number) ?? null,
-    sold_quantity: (mlData.sold_quantity as number) ?? null,
-    status: (mlData.status as string) ?? 'active',
-    condition: (mlData.condition as string) ?? null,
-    listing_type_id: (mlData.listing_type_id as string) ?? null,
-    category_id: (mlData.category_id as string) ?? null,
-    permalink: (mlData.permalink as string) ?? `https://www.mercadolibre.com.uy/p/${resolvedId}`,
-    thumbnail: (mlData.thumbnail as string) ?? null,
-    seller_id: (mlData.seller_id as number) ?? null,
-    seller_name: (mlData.seller_name as string) ?? null,
-    health: (mlData.health as number) ?? null,
-    usd_price: usdPrice,
-    synced_at: new Date().toISOString(),
+  if (!item) throw new Error('No se pudo recuperar el rival persistido')
+  return NextResponse.json({ ok: true, item, association: data.association })
+})
+export const PATCH = withMonitorAuth(async (req: NextRequest) => {
+  const body = await readBody(req)
+  if (typeof body.associationId !== 'string')
+    throw new ApiError(400, 'Falta associationId')
+  const changes: Record<string, unknown> = {
+    updated_at: new Date().toISOString(),
   }
-
-  if (sameProductLink) {
-    const updateData = {
-      title: record.title,
-      permalink: record.permalink,
-      thumbnail: record.thumbnail,
-      seller_name: record.seller_name,
-      synced_at: record.synced_at,
-    }
-
-    const { error } = await admin.schema('ml').from('ml_competitor_items').update(updateData).eq('id', resolvedId)
-    if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 })
-    }
-
-    return NextResponse.json({
-      ok: true,
-      item: {
-        ...(existing ?? {}),
-        ...record,
-        ...updateData,
-      },
+  if (typeof body.paused === 'boolean') changes.paused = body.paused
+  if (body.restore === true) changes.removed_at = null
+  if (['pending', 'accepted', 'rejected'].includes(String(body.equivalence))) {
+    changes.equivalence = body.equivalence
+    changes.review_source = 'manual_review'
+    changes.reviewed_at = new Date().toISOString()
+    changes.reviewed_by = (
+      await (await createClient()).auth.getUser()
+    ).data.user!.id
+  }
+  if (Object.keys(changes).length === 1)
+    throw new ApiError(400, 'No hay cambios válidos')
+  const { data, error } = await createAdminClient()
+    .schema('ml')
+    .from('ml_competitor_links')
+    .update(changes)
+    .eq('id', body.associationId)
+    .select()
+    .maybeSingle()
+  if (error) throw error
+  if (!data) throw new ApiError(404, 'La asociación ya no existe')
+  return NextResponse.json({ ok: true, association: data })
+})
+export const DELETE = withMonitorAuth(async (req: NextRequest) => {
+  const body = await readBody(req)
+  if (typeof body.associationId !== 'string')
+    throw new ApiError(400, 'Falta associationId')
+  const { data, error } = await createAdminClient()
+    .schema('ml')
+    .from('ml_competitor_links')
+    .update({
+      removed_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     })
-  }
-
-  const { error } = await admin.schema('ml').from('ml_competitor_items').upsert(record)
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 })
-  }
-
-  return NextResponse.json({ ok: true, item: record })
-}
-
-export async function PATCH(req: NextRequest) {
-  const { itemId, ourSku, ourProductId, paused } = await req.json()
-  const admin = createAdminClient()
-
-  let query = admin
-    .schema('ml').from('ml_competitor_items')
-    .update({ paused })
-    .eq('id', itemId)
-
-  query = ourProductId
-    ? query.eq('our_product_id', ourProductId)
-    : query.ilike('our_sku', ourSku)
-
-  const { error } = await query
-
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-  return NextResponse.json({ ok: true })
-}
-
-export async function DELETE(req: NextRequest) {
-  const { itemId, ourSku, ourProductId } = await req.json()
-  const admin = createAdminClient()
-
-  let query = admin
-    .schema('ml').from('ml_competitor_items')
-    .delete()
-    .eq('id', itemId)
-
-  query = ourProductId
-    ? query.eq('our_product_id', ourProductId)
-    : query.ilike('our_sku', ourSku)
-
-  const { error } = await query
-
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 })
-  return NextResponse.json({ ok: true })
-}
+    .eq('id', body.associationId)
+    .select()
+    .maybeSingle()
+  if (error) throw error
+  if (!data) throw new ApiError(404, 'La asociación ya no existe')
+  return NextResponse.json({ ok: true, association: data })
+})

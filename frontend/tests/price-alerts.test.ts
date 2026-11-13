@@ -1,151 +1,93 @@
 import assert from 'node:assert/strict'
-import { test } from 'node:test'
-import { fetchAllRows } from '../src/lib/fetch-all-rows.ts'
-import { indexProducts, resolveCompetitorProducts } from '../src/lib/product-ownership.ts'
-import {
-  resolvePublicationAlerts, filterPublicationAlerts, productSkuOptions, updateAlertReadAt, removeAlerts,
-  type AlertFilters, type AlertRow, type ProductPriceRow, type RuleType,
-} from '../src/lib/price-alerts.ts'
-
-const product = (id: string, overrides: Partial<ProductPriceRow> = {}): ProductPriceRow => ({
-  id, sku: ' SKU ', title: id, status: 'active', price: 100, sale_price: null,
-  catalog_price: null, synced_at: '2026-10-29T00:00:00Z', ...overrides,
+import {test} from 'node:test'
+import {buildAlertEvents,originalPriceChanged,relativeLabel,type EventSnapshot,type EventRule} from '../../supabase/functions/_shared/alert-events.ts'
+import {observe,compare,type CompetitorLink} from '../../supabase/functions/_shared/monitoring.ts'
+import {dateBounds,marketplaceLink} from '../src/lib/price-alerts.ts'
+const old='2020-01-01T00:00:00Z'
+const own={id:'MLU100',sku:'sku',title:'Propio',status:'active',price:100,sale_price:null,catalog_price:null,currency_id:'UYU',synced_at:old,catalog_listing:false}
+const link:CompetitorLink={id:'link',competitor_item_id:'MLU200',scope:'publication',our_product_id:own.id,our_sku:null,equivalence:'accepted',paused:false,removed_at:null}
+const rival={id:'MLU200',target_kind:'item' as const,status:'active',title:'Rival',seller_name:'Vendedor',observation:{...observe(80,'UYU',old,'item'),itemId:'MLU200'}}
+const rules:EventRule[]=[1,5,20].map((threshold_pct,i)=>({id:'rule'+i,name:'Regla '+i,rule_type:'price_diff_pct_above',threshold_pct,enabled:true,sku:null,compare_catalog_price:true}))
+const previous=observe(90,'UYU',old,'item')
+const build=()=>buildAlertEvents(rival,previous,[own],[rival],[link],rules,null)
+test('multiple matching rules produce one event per own/rival pair',()=>{
+ const events=build();assert.equal(events.length,1);assert.equal((events[0].matched_rules as unknown[]).length,3)
+ assert.equal(events[0].diff_pct,20)
+ const snapshot=events[0].event_snapshot as EventSnapshot
+ assert.equal(snapshot.relativePct,-20);assert.equal(snapshot.detectedAt,old)
 })
-const alert = (id: string, overrides: Partial<AlertRow> = {}): AlertRow => ({
-  id, our_sku: 'sku', competitor_item_id: 'rival', our_price: 999, catalog_price: null,
-  competitor_price_before: 90, competitor_price_after: 80, diff_pct: 99,
-  fired_at: '2026-10-29T00:00:00Z', read_at: null,
-  ml_price_alert_rules: { id: 'rule', name: 'rule', rule_type: 'competitor_cheaper', threshold_pct: null, compare_catalog_price: true },
-  ml_competitor_items: { our_product_id: null, our_sku: 'sku', title: 'Rival', seller_name: ' Seller ', thumbnail: null, price: 80, paused: false, status: 'active' },
-  ...overrides,
+test('initial observation, repeated price and own-only price changes do not create an event',()=>{
+ assert.deepEqual(buildAlertEvents(rival,null,[own],[rival],[link],rules,null),[])
+ assert.deepEqual(buildAlertEvents(rival,rival.observation,[{...own,price:300}],[rival],[link],rules,null),[])
+ assert.equal(originalPriceChanged(previous,rival.observation),true)
 })
-const filters: AlertFilters = { read: 'all', sku: '', rule: '', competitor: '', status: 'all' }
-
-test('explicit links never fall back to a shared SKU, including missing IDs and products without SKU', () => {
-  const p1 = product('one'), p2 = product('two'), noSku = product('no-sku', { sku: null })
-  const index = indexProducts([p1, p2, noSku])
-  assert.deepEqual(resolveCompetitorProducts({ our_product_id: 'two', our_sku: 'sku' }, index), [p2])
-  assert.deepEqual(resolveCompetitorProducts({ our_product_id: 'missing', our_sku: 'sku' }, index), [])
-  assert.deepEqual(resolveCompetitorProducts({ our_product_id: 'no-sku', our_sku: 'old' }, index), [noSku])
-  assert.deepEqual(resolveCompetitorProducts({ our_product_id: null, our_sku: ' sKu ' }, index), [p1, p2])
-  assert.deepEqual(resolveCompetitorProducts({ our_product_id: null, our_sku: ' ' }, index), [])
+test('old observations remain comparable without four-hour expiration',()=>{
+ assert.equal(compare(own,rival,[link]).status,'comparable');assert.equal(build().length,1)
 })
-
-test('legacy rivals use every matching publication, with independent prices and original source IDs', () => {
-  const source = alert('shared')
-  const before = structuredClone(source)
-  const rows = resolvePublicationAlerts([source], [product('one'), product('two', { price: 200, status: 'paused' }), product('cheap', { price: 50 })])
-  assert.deepEqual(rows.map(r => [r.id, r.owner_product_id, r.our_price, r.diff_pct]), [
-    ['shared', 'one', 100, 20], ['shared', 'two', 200, 60],
-  ])
-  assert.equal(new Set(rows.map(r => r.row_key)).size, 2)
-  assert.notEqual(rows[0], rows[1])
-  assert.deepEqual(source, before)
+test('FX-only changes do not create an event; changed raw prices share one evaluation quote',()=>{
+ const before=observe(2,'USD',old,'item',{rate:40,source:'test',fetchedAt:old,publishedAt:null})
+ const fx={rate:42,source:'test',fetchedAt:old,publishedAt:null}
+ const next={...rival,observation:observe(2,'USD',old,'item',fx)}
+ assert.equal(originalPriceChanged(before,next.observation),false)
+ assert.deepEqual(buildAlertEvents(next,before,[own],[next],[link],rules,fx),[])
+ next.observation=observe(1.5,'USD',old,'item',fx)
+ const events=buildAlertEvents(next,before,[own],[next],[link],rules,fx)
+ assert.equal(events.length,1);assert.equal(events[0].competitor_price_after,63)
 })
-
-test('selects the latest qualifying alert per publication, skipping newer non-current alerts', () => {
-  const invalid = alert('new-invalid', { ml_competitor_items: { ...alert('x').ml_competitor_items!, price: 500 } })
-  const rows = resolvePublicationAlerts([invalid, alert('valid'), alert('old')], [product('one'), product('two')])
-  assert.deepEqual(rows.map(r => r.id), ['valid', 'valid'])
+test('missing conversion, rejected equivalence and unavailable rival do not produce events',()=>{
+ assert.deepEqual(buildAlertEvents({...rival,observation:observe(2,'USD',old,'item')},previous,[own],[rival],[link],rules,null),[])
+ assert.deepEqual(buildAlertEvents(rival,previous,[own],[rival],[{...link,equivalence:'rejected'}],rules,null),[])
+ assert.deepEqual(buildAlertEvents({...rival,availability:'unavailable'},previous,[own],[rival],[link],rules,null),[])
 })
-
-test('includes own publications in every state and without SKU; excludes missing owners and paused/closed rivals', () => {
-  const states = ['active', 'paused', 'under_review', 'closed', 'inactive', null]
-  assert.equal(resolvePublicationAlerts([alert('all')], states.map((status, i) => product(String(i), { status }))).length, 6)
-  for (const changes of [{ paused: true }, { status: 'paused' }, { status: 'closed' }]) {
-    const a = alert('excluded'); Object.assign(a.ml_competitor_items!, changes)
-    assert.equal(resolvePublicationAlerts([a], [product('one')]).length, 0)
-  }
-  const explicit = alert('no-sku'); explicit.ml_competitor_items!.our_product_id = 'one'
-  assert.equal(resolvePublicationAlerts([explicit], [product('one', { sku: null })]).length, 1)
-  assert.deepEqual(resolvePublicationAlerts([alert('orphan', { ml_competitor_items: null })], [product('one')]), [])
-  const missing = alert('missing'); missing.ml_competitor_items!.our_sku = '2779'
-  assert.deepEqual(resolvePublicationAlerts([missing], [product('one')]), [])
+for(const status of ['paused','under_review','closed','inactive'])test(`own ${status} does not generate active events`,()=>{
+ assert.deepEqual(buildAlertEvents(rival,previous,[{...own,status}],[rival],[link],rules,null),[])
 })
-
-test('reference prices prefer sale, optional catalog, then list, preserving zero and null', () => {
-  const p = product('one', { price: 200, catalog_price: 150, sale_price: 100 })
-  assert.equal(resolvePublicationAlerts([alert('sale')], [p])[0].our_price, 100)
-  p.sale_price = null
-  assert.equal(resolvePublicationAlerts([alert('catalog')], [p])[0].our_price, 150)
-  const noCatalog = alert('list'); noCatalog.ml_price_alert_rules!.compare_catalog_price = false
-  assert.equal(resolvePublicationAlerts([noCatalog], [p])[0].our_price, 200)
-  const changed = alert('zero'); changed.ml_price_alert_rules!.rule_type = 'price_changed'
-  assert.equal(resolvePublicationAlerts([changed], [product('one', { sale_price: 0 })])[0].our_price, 0)
-  assert.equal(resolvePublicationAlerts([changed], [product('one', { price: null })])[0].diff_pct, null)
+test('snapshot is independent of later edits to prices and identities',()=>{
+ const events=build(), snapshot=events[0].event_snapshot as EventSnapshot
+ const saved=structuredClone(snapshot)
+ previous.amount=91
+ assert.deepEqual(snapshot,saved)
+ previous.amount=90
 })
-
-test('evaluates each rule and threshold boundary using current rival price with historical fallback', () => {
-  const cases: [RuleType, number, number | null, boolean][] = [
-    ['price_changed', 80, null, true], ['competitor_cheaper', 80, null, true],
-    ['competitor_cheaper', 100, null, false], ['competitor_pricier', 120, null, true],
-    ['price_diff_pct_above', 80, 20, true], ['price_diff_pct_above', 80, 21, false],
-    ['price_diff_pct_below', 120, 20, true], ['price_diff_pct_below', 120, 21, false],
-    ['price_diff_pct_above', 80, null, false],
-  ]
-  for (const [rule_type, price, threshold_pct, expected] of cases) {
-    const a = alert('rule'); Object.assign(a.ml_price_alert_rules!, { rule_type, threshold_pct }); a.ml_competitor_items!.price = price
-    assert.equal(resolvePublicationAlerts([a], [product('one')]).length > 0, expected, `${rule_type}:${price}:${threshold_pct}`)
-  }
-  const a = alert('fallback'); a.ml_competitor_items!.price = null
-  assert.equal(resolvePublicationAlerts([a], [product('one')])[0].competitor_price_after, 80)
-  a.competitor_price_after = null
-  assert.deepEqual(resolvePublicationAlerts([a], [product('one')]), [])
-  a.ml_price_alert_rules = null
-  assert.deepEqual(resolvePublicationAlerts([a], [product('one')]), [])
+test('ranking identifies the own row and shares positions on equal prices',()=>{
+ const another={...rival,id:'MLU201',observation:{...observe(100,'UYU',old,'item'),itemId:'MLU201'}}
+ const events=buildAlertEvents(rival,previous,[own],[rival,another],[link,{...link,id:'other',competitor_item_id:another.id}],rules,null)
+ const rows=(events[0].event_snapshot as EventSnapshot).rows
+ assert.deepEqual(rows.map(row=>row.position),[1,2,2]);assert.ok(rows.find(row=>row.isOwn)?.price===100)
 })
-
-test('all is unfiltered; SKU filters normalize and do not exclude SKU-less rows by default', () => {
-  const a = alert('shared')
-  const explicit = alert('explicit'); explicit.ml_competitor_items!.our_product_id = 'no-sku'
-  const rows = resolvePublicationAlerts([a, explicit], [product('one'), product('two', { status: 'paused' }), product('no-sku', { sku: null })])
-  assert.equal(filterPublicationAlerts(rows, filters).length, 3)
-  assert.equal(filterPublicationAlerts(rows, { ...filters, sku: ' SkU ' }).length, 2)
-  assert.equal(filterPublicationAlerts(rows, { ...filters, status: 'active' }).length, 2)
-  assert.equal(filterPublicationAlerts(rows, { ...filters, competitor: 'Seller', rule: 'rule' }).length, 3)
-  assert.equal(filterPublicationAlerts(rows, { ...filters, rule: 'other' }).length, 0)
+test('rule-specific references remain stored while the card uses the standard reference',()=>{
+ const product={...own,catalog_price:150,catalog_item_id:own.id,catalog_currency_id:'UYU',catalog_observed_at:old}
+ const changed={...rival,observation:observe(120,'UYU',old,'item')}
+ const applicable=[rules[0],{...rules[1],rule_type:'competitor_pricier',compare_catalog_price:false}]
+ const event=buildAlertEvents(changed,previous,[product],[changed],[link],applicable,null)[0]
+ assert.equal((event.matched_rules as unknown[]).length,2)
+ assert.equal((event.event_snapshot as EventSnapshot).relativePct,-20)
 })
-
-test('read and delete update every occurrence of a source alert; counts and unread filters follow shared state', () => {
-  const rows = resolvePublicationAlerts([alert('shared')], [product('one'), product('two')])
-  const read = updateAlertReadAt(rows, new Set(['shared']), '2026-10-29T12:00:00Z')
-  assert.equal(read.filter(r => !r.read_at).length, 0)
-  assert.equal(filterPublicationAlerts(read, { ...filters, read: 'unread' }).length, 0)
-  assert.equal(filterPublicationAlerts(read, filters).length, 2)
-  assert.equal(removeAlerts(read, new Set(['shared'])).length, 0)
-  assert.equal(rows.filter(r => !r.read_at).length, 2)
+test('percentages use the rival price sign and retain explicit advantage/tie labels',()=>{
+ assert.equal(relativeLabel(-10),'Rival −10 % · Desventaja')
+ assert.equal(relativeLabel(10),'Rival +10 % · Ventaja')
+ assert.equal(relativeLabel(0),'Rival 0 % · Empate')
+ assert.equal(relativeLabel(null),'Rival — · Sin comparación')
 })
-
-test('SKU options normalize and deduplicate while keeping the most recent publication title', () => {
-  const options = productSkuOptions([
-    product('old', { synced_at: null }), product('new', { sku: 'sku', title: 'New' }), product('none', { sku: null }),
-  ])
-  assert.deepEqual(options, [{ sku: 'sku', title: 'New' }])
+test('date end includes a full local day, including a DST boundary',()=>{
+ const before=process.env.TZ;process.env.TZ='America/New_York'
+ try{
+  const range=dateBounds('2026-03-08','2026-03-08')
+  assert.equal(Date.parse(range.to)-Date.parse(range.from),23*3600000)
+  assert.throws(()=>dateBounds('2026-02-31',''))
+  assert.throws(()=>dateBounds('2026-03-10','2026-03-09'))
+ }finally{if(before===undefined)delete process.env.TZ;else process.env.TZ=before}
 })
-
-test('pagination keeps >1000 products and alerts outside the first 200, with inclusive stable ranges', async () => {
-  const products = Array.from({ length: 1501 }, (_, i) => product(`p${i}`, { sku: `sku${i}` }))
-  const alerts = products.map((p, i) => {
-    const a = alert(`a${i}`, { our_sku: p.sku! }); a.ml_competitor_items!.our_sku = p.sku!; return a
-  })
-  const calls: [number, number][] = []
-  const load = <T,>(data: T[]) => fetchAllRows('test', async (from, to) => {
-    calls.push([from, to]); return { data: data.slice(from, to + 1), error: null }
-  })
-  const rows = resolvePublicationAlerts(await load(alerts), await load(products))
-  assert.equal(rows.length, 1501)
-  assert.equal(rows.at(-1)!.owner_product_id, 'p1500')
-  assert.deepEqual(calls, [[0, 999], [1000, 1999], [0, 999], [1000, 1999]])
+test('marketplace links reject executable and unrelated URLs',()=>{
+ assert.equal(marketplaceLink('javascript:alert(1)'),null)
+ assert.equal(marketplaceLink('https://example.com'),null)
+ assert.equal(marketplaceLink('http://www.mercadolibre.com.uy/p/MLU1'),'https://www.mercadolibre.com.uy/p/MLU1')
 })
-
-test('pagination handles an exact multiple, successful empty queries, and later-page failures without partial results', async () => {
-  let calls = 0
-  const rows = await fetchAllRows('test', async from => {
-    calls++; return { data: from === 0 ? Array(1000).fill('row') : [], error: null }
-  })
-  assert.equal(rows.length, 1000); assert.equal(calls, 2)
-  assert.deepEqual(await fetchAllRows('test', async () => ({ data: [], error: null })), [])
-  await assert.rejects(fetchAllRows('las alertas', async from => from === 0
-    ? { data: Array(1000).fill('row'), error: null }
-    : { data: null, error: { message: 'missing column' } }), /No se pudieron cargar las alertas: missing column/)
+test('price-change rules also require a usable own price and a shared conversion',()=>{
+ const changeRule={...rules[0],rule_type:'price_changed'}
+ assert.deepEqual(buildAlertEvents(rival,previous,[{...own,price:0}],[rival],[link],[changeRule],null),[])
+ assert.deepEqual(buildAlertEvents(rival,previous,[{...own,currency_id:'USD'}],[rival],[link],[changeRule],null),[])
+ const changedCurrency={...rival,observation:observe(80,'USD',old,'item')}
+ const fx={rate:40,source:'test',fetchedAt:old,publishedAt:null}
+ assert.equal(buildAlertEvents(changedCurrency,previous,[own],[changedCurrency],[link],[changeRule],fx).length,1)
 })

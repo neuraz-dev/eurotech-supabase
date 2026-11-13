@@ -156,12 +156,19 @@ apply_pending_migrations() {
 
 sync_functions() {
   local function_dir function_name
+  local sync_options
   for function_dir in "$ROOT_DIR"/supabase/functions/*; do
     [[ -d "$function_dir" ]] || continue
     function_name="$(basename "$function_dir")"
     echo "Sincronizando Edge Function $function_name"
     sudo -n mkdir -p "$VOLUME_ROOT/functions/$function_name"
-    sudo -n rsync -az --delete --exclude='.DS_Store' --exclude='._*' \
+    sync_options=(-az --checksum --exclude='.DS_Store' --exclude='._*')
+    # Gestor also owns files in _shared (including self-hosted-auth.ts).
+    # Delete obsolete files only inside Monitor's own function directories.
+    if [[ "$function_name" != "_shared" ]]; then
+      sync_options+=(--delete)
+    fi
+    sudo -n rsync "${sync_options[@]}" \
       "$function_dir/" "$VOLUME_ROOT/functions/$function_name/"
   done
 
