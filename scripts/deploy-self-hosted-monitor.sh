@@ -126,7 +126,9 @@ SQL
 
 apply_pending_migrations() {
   local file filename version checksum recorded
-  while IFS= read -r file; do
+  # docker exec -i forwards stdin, even for psql -c. Keep the file list on a
+  # separate descriptor so a database lookup cannot consume pending migrations.
+  while IFS= read -r file <&3; do
     filename="$(basename "$file")"
     version="${filename%%_*}"
     if [[ ! "$version" =~ ^[0-9]{14}$ ]]; then
@@ -134,7 +136,7 @@ apply_pending_migrations() {
       exit 1
     fi
     checksum="$(shasum -a 256 "$file" | awk '{print $1}')"
-    recorded="$(psql -Atc "SELECT checksum FROM deployment.monitor_migrations WHERE version = '$version'")"
+    recorded="$(psql -Atc "SELECT checksum FROM deployment.monitor_migrations WHERE version = '$version'" < /dev/null)"
 
     if [[ -n "$recorded" ]]; then
       if [[ "$recorded" != "$checksum" ]]; then
@@ -151,7 +153,7 @@ apply_pending_migrations() {
       printf "\nINSERT INTO deployment.monitor_migrations (version, filename, checksum) VALUES ('%s', '%s', '%s');\n" "$version" "$filename" "$checksum"
       printf 'COMMIT;\n'
     } | psql
-  done < <(find "$ROOT_DIR/supabase/migrations" -maxdepth 1 -type f -name '*.sql' -print | sort)
+  done 3< <(find "$ROOT_DIR/supabase/migrations" -maxdepth 1 -type f -name '*.sql' -print | sort)
 }
 
 sync_functions() {

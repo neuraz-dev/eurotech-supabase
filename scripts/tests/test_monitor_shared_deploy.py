@@ -1,5 +1,6 @@
 """Run the real rsync step on temporary files; never contact Docker or a server."""
 import os
+import hashlib
 from pathlib import Path
 import subprocess
 import tempfile
@@ -9,6 +10,44 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class SharedRuntimeDeployTest(unittest.TestCase):
+    def test_database_stdin_cannot_consume_pending_migration_list(self):
+        source = (ROOT / 'scripts/deploy-self-hosted-monitor.sh').read_text()
+        function = source[source.index('apply_pending_migrations() {'):source.index('\nsync_functions() {')]
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            migrations = base / 'supabase/migrations'
+            migrations.mkdir(parents=True)
+            for version in ('20260101000000', '20260102000000', '20260103000000'):
+                (migrations / f'{version}_fixture.sql').write_text(f'SELECT {version};\n')
+            checksum = hashlib.sha256((migrations / '20260101000000_fixture.sql').read_bytes()).hexdigest()
+            # Like docker exec -i, a checksum lookup drains stdin even though
+            # its SQL comes from -c. The first migration is already recorded.
+            script = '\n'.join([
+                'set -Eeuo pipefail',
+                '''psql() {
+                  if [[ "${1:-}" == "-Atc" ]]; then
+                    cat > /dev/null
+                    if [[ "$2" == *20260101000000* ]]; then
+                      printf '%s\\n' "$RECORDED_CHECKSUM"
+                    fi
+                  else
+                    cat >> "$APPLIED_SQL"
+                  fi
+                }''',
+                function,
+                'apply_pending_migrations',
+            ])
+            applied = base / 'applied.sql'
+            env = dict(os.environ, ROOT_DIR=str(base),
+                       RECORDED_CHECKSUM=checksum, APPLIED_SQL=str(applied))
+            subprocess.run(['bash', '-c', script], env=env, check=True, capture_output=True)
+            sql = applied.read_text()
+            self.assertNotIn('SELECT 20260101000000;', sql)
+            self.assertIn('SELECT 20260102000000;', sql)
+            self.assertIn('SELECT 20260103000000;', sql)
+            self.assertEqual(sql.count('BEGIN;'), 2)
+            self.assertEqual(sql.count('COMMIT;'), 2)
+
     def test_monitor_deploy_preserves_gestor_sources(self):
         source = (ROOT / 'scripts/deploy-self-hosted-monitor.sh').read_text()
         function = source[source.index('sync_functions() {'):source.index('\nensure_runtime\ninit_migration_tracking')]
