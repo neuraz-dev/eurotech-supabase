@@ -154,6 +154,24 @@ test('an exhausted external retry reports attempts and keeps the persisted ident
   assert.equal(attempts, 2)
   assert.equal(result.results[0].attempts, 2)
 })
+test('worker yields after one confirmed task even when more work is available', async () => {
+  let claims = 0, finishes = 0
+  const client = database(async (req) => {
+    if (req.url.includes('claim_manual_sync_task')) {
+      claims++
+      return Response.json([task()])
+    }
+    if (req.url.includes('finish_manual_sync_task')) {
+      finishes++
+      return Response.json(true)
+    }
+    throw new Error('unexpected call')
+  })
+  const result = await processManualQueue(client, adapter)
+  assert.equal(result.processed, 1)
+  assert.equal(claims, 1)
+  assert.equal(finishes, 1)
+})
 test('worker fails without acknowledging an unconfirmed database finish', async () => {
   let claimed = false
   const client = database(async (req) => {

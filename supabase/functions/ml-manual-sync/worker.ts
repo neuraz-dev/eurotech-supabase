@@ -219,7 +219,9 @@ export async function processManualQueue(
 ) {
   const started = Date.now()
   let processed = 0
-  while (Date.now() - started < budgetMs) {
+  // Wall-clock time does not bound CPU consumption. Yield after one durable
+  // task so the next HTTP invocation gets its own request CPU budget.
+  while (processed < 1 && Date.now() - started < budgetMs) {
     const claimed = await client.schema('ml').rpc('claim_manual_sync_task')
     if (claimed.error) {
       throw new Error('No se pudo reclamar la tarea de sincronización')
